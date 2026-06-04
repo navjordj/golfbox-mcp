@@ -115,6 +115,15 @@ async function validateCodexPlugin(pluginDir) {
   if (mcpJson.mcpServers?.golfbox?.command !== "node") {
     errors.push(".mcp.json golfbox server must use node");
   }
+  if (mcpJson.mcpServers?.golfbox?.args?.[0] !== "./server/scripts/run-mcp.mjs") {
+    errors.push(".mcp.json golfbox server must start ./server/scripts/run-mcp.mjs");
+  }
+  try {
+    await fs.access(path.join(pluginDir, "setup-golfbox-credentials.sh"));
+    await fs.access(path.join(pluginDir, "server", "scripts", "run-mcp.mjs"));
+  } catch {
+    errors.push("Codex plugin missing credential setup script or MCP launcher");
+  }
   if (!skill.startsWith("---\nname: golfbox\n")) {
     errors.push("golfbox skill is missing expected frontmatter");
   }
@@ -131,6 +140,52 @@ async function prepareServer(targetDir) {
     exclude: (sourcePath, entry) => entry.isFile() && /\.test\.js$/.test(sourcePath)
   });
   await installProductionDependencies(targetDir);
+}
+
+async function writeCodexCredentialSetup(pluginDir) {
+  const setupFile = path.join(pluginDir, "setup-golfbox-credentials.sh");
+  await fs.writeFile(
+    setupFile,
+    [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "",
+      'plugin_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+      'env_file="$plugin_dir/server/.env.local"',
+      "",
+      "escape_env_value() {",
+      '  local value="$1"',
+      "  value=\"${value//$'\\\\n'/}\"",
+      "  value=\"${value//\\\\/\\\\\\\\}\"",
+      "  value=\"${value//\\\"/\\\\\\\"}\"",
+      "  printf '\"%s\"' \"$value\"",
+      "}",
+      "",
+      'read -r -p "GolfBox username: " username',
+      'read -r -s -p "GolfBox password: " password',
+      "printf '\\n'",
+      "",
+      'mkdir -p "$(dirname "$env_file")"',
+      "{",
+      "  printf 'GOLFBOX_PROVIDER=official\\n'",
+      "  printf 'GOLFBOX_USERNAME=%s\\n' \"$(escape_env_value \"$username\")\"",
+      "  printf 'GOLFBOX_PASSWORD=%s\\n' \"$(escape_env_value \"$password\")\"",
+      "  printf 'GOLFBOX_COUNTRY=NO\\n'",
+      "  printf 'GOLFBOX_REQUEST_TIMEOUT_MS=15000\\n'",
+      "  printf 'GOLFBOX_WEB_REQUEST_TIMEOUT_MS=15000\\n'",
+      "  printf 'GOLFBOX_ALLOW_UNTRUSTED_URLS=false\\n'",
+      "  printf 'GOLFBOX_INCLUDE_ERROR_BODY_SNIPPETS=false\\n'",
+      "  printf 'GOLFBOX_ENABLE_WRITE_TOOLS=false\\n'",
+      "  printf 'GOLFBOX_REQUIRE_CONFIRMATION=true\\n'",
+      '} > "$env_file"',
+      "",
+      'chmod 600 "$env_file"',
+      'printf "Wrote %s with permissions 600.\\n" "$env_file"',
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  await fs.chmod(setupFile, 0o755);
 }
 
 async function prepareMcpb() {
@@ -231,6 +286,12 @@ async function prepareMcpb() {
 async function prepareCodexPlugin() {
   const pluginDir = path.join(buildDir, "codex-plugin", "golfbox-mcp");
   await prepareServer(path.join(pluginDir, "server"));
+  await fs.mkdir(path.join(pluginDir, "server", "scripts"), { recursive: true });
+  await fs.copyFile(
+    path.join(rootDir, "scripts", "run-mcp.mjs"),
+    path.join(pluginDir, "server", "scripts", "run-mcp.mjs")
+  );
+  await writeCodexCredentialSetup(pluginDir);
   await writeJson(path.join(pluginDir, ".codex-plugin", "plugin.json"), {
     name: "golfbox-mcp",
     version,
@@ -261,7 +322,7 @@ async function prepareCodexPlugin() {
     mcpServers: {
       golfbox: {
         command: "node",
-        args: ["./server/dist/index.js"],
+        args: ["./server/scripts/run-mcp.mjs"],
         env: {
           GOLFBOX_PROVIDER: "official",
           GOLFBOX_COUNTRY: "NO",
@@ -300,7 +361,15 @@ async function prepareCodexPlugin() {
       "",
       "This private plugin bundles the local GolfBox MCP server for Codex.",
       "",
-      "Configure credentials in Codex's MCP environment using either `GOLFBOX_USERNAME` + `GOLFBOX_PASSWORD`, or `GOLFBOX_API_TOKEN`. Booking and cancellation are disabled by default with `GOLFBOX_ENABLE_WRITE_TOOLS=false`.",
+      "## Setup",
+      "",
+      "1. Run `./setup-golfbox-credentials.sh` from this plugin folder.",
+      "2. Install this `golfbox-mcp` folder in Codex as a local/private plugin.",
+      "3. Start a new Codex thread and ask it to run `golfbox_authenticate`.",
+      "",
+      "The setup script writes `server/.env.local` with permissions `600`. Credentials stay local and are not included in release bundles.",
+      "",
+      "Advanced users can skip the setup script and configure Codex's MCP environment with either `GOLFBOX_USERNAME` + `GOLFBOX_PASSWORD`, or `GOLFBOX_API_TOKEN`. Booking and cancellation are disabled by default with `GOLFBOX_ENABLE_WRITE_TOOLS=false`.",
       ""
     ].join("\n"),
     "utf8"
@@ -319,7 +388,7 @@ async function createSourceSummary() {
   await fs.copyFile(path.join(rootDir, "INSTALL.md"), path.join(packageDir, "INSTALL.md"));
   await fs.writeFile(
     path.join(packageDir, "README.txt"),
-    `GolfBox MCP private release v${version}\n\nContents:\n- GolfBox MCP.mcpb: install this in Claude Desktop.\n- golfbox-mcp-codex-plugin.zip: private Codex plugin bundle.\n- INSTALL.md: short end-user setup instructions.\n\nCredentials stay local on each user's machine. Booking and cancellation tools are disabled by default.\n`,
+    `GolfBox MCP private release v${version}\n\nContents:\n- GolfBox MCP.mcpb: install this in Claude Desktop.\n- golfbox-mcp-codex-plugin.zip: private Codex plugin bundle.\n- INSTALL.md: short end-user setup instructions.\n\nFor Codex, unzip the plugin bundle and run ./setup-golfbox-credentials.sh from the unzipped golfbox-mcp folder before installing it as a local/private plugin.\n\nCredentials stay local on each user's machine. Booking and cancellation tools are disabled by default.\n`,
     "utf8"
   );
   await zipDirectory(packageDir, path.join(releaseDir, `${bundleBaseName}.zip`));
@@ -424,7 +493,24 @@ async function createPagesSite() {
       color: var(--muted);
       font-size: 1.05rem;
     }
-    ul {
+    section {
+      margin: 32px 0;
+    }
+    h2 {
+      margin: 0 0 12px;
+      font-size: 1.2rem;
+    }
+    ol {
+      margin: 0;
+      padding-left: 1.3rem;
+      color: var(--muted);
+    }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.95em;
+      color: var(--text);
+    }
+    ul.downloads {
       list-style: none;
       padding: 0;
       margin: 32px 0;
@@ -433,7 +519,7 @@ async function createPagesSite() {
       background: var(--surface);
       overflow: hidden;
     }
-    li {
+    ul.downloads > li {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 16px;
@@ -441,7 +527,7 @@ async function createPagesSite() {
       padding: 18px 20px;
       border-top: 1px solid var(--line);
     }
-    li:first-child { border-top: 0; }
+    ul.downloads > li:first-child { border-top: 0; }
     a {
       color: var(--accent);
       font-weight: 700;
@@ -459,7 +545,7 @@ async function createPagesSite() {
       font-size: 0.9rem;
     }
     @media (max-width: 640px) {
-      li {
+      ul.downloads > li {
         grid-template-columns: 1fr;
         gap: 6px;
       }
@@ -470,9 +556,18 @@ async function createPagesSite() {
   <main>
     <h1>GolfBox MCP downloads</h1>
     <p>Latest private build from main. Credentials stay local on each user's machine, and booking or cancellation tools are disabled by default.</p>
-    <ul>
+    <ul class="downloads">
 ${rows}
     </ul>
+    <section>
+      <h2>Codex setup</h2>
+      <ol>
+        <li>Unzip <code>golfbox-mcp-codex-plugin.zip</code>.</li>
+        <li>Run <code>./setup-golfbox-credentials.sh</code> from the unzipped <code>golfbox-mcp</code> folder.</li>
+        <li>Install the <code>golfbox-mcp</code> folder in Codex as a local/private plugin.</li>
+        <li>Start a new Codex thread and run <code>golfbox_authenticate</code>.</li>
+      </ol>
+    </section>
     <footer>Version ${escapeHtml(version)}. Built ${escapeHtml(buildDate)} from ${escapeHtml(commitSha.slice(0, 12))}.</footer>
   </main>
 </body>

@@ -15,12 +15,19 @@ If tools do not appear, restart Claude Desktop and check Settings -> Extensions 
 ## If you use Codex
 
 1. Unzip `golfbox-mcp-codex-plugin.zip`.
-2. Install the `golfbox-mcp` plugin folder in Codex as a local/private plugin.
-3. Configure the MCP server environment with either:
-   - `GOLFBOX_USERNAME` and `GOLFBOX_PASSWORD`, or
-   - `GOLFBOX_API_TOKEN`.
-4. Keep `GOLFBOX_ENABLE_WRITE_TOOLS=false` unless you deliberately want real booking/cancellation tools.
+2. Open a terminal in the unzipped `golfbox-mcp` plugin folder.
+3. Run `./setup-golfbox-credentials.sh` and enter your GolfBox username and password.
+4. Install the `golfbox-mcp` plugin folder in Codex as a local/private plugin.
 5. Start a new Codex thread and ask it to use GolfBox MCP to authenticate, list clubs, or search tee times.
+
+The setup script writes `server/.env.local` with permissions `600`. Credentials stay local and are not included in release bundles.
+
+Advanced users can skip the setup script and configure the MCP server environment with either:
+
+- `GOLFBOX_USERNAME` and `GOLFBOX_PASSWORD`, or
+- `GOLFBOX_API_TOKEN`.
+
+Keep `GOLFBOX_ENABLE_WRITE_TOOLS=false` unless you deliberately want real booking/cancellation tools.
 
 Recommended safe first prompt:
 
