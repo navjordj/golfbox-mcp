@@ -16,10 +16,16 @@ Denne repoen bruker Bun som dev-runtime, pakkebehandler og test runner. Den bygd
 
 ## Privat deling
 
+Siste build fra `main` publiseres automatisk til GitHub Pages:
+
+```text
+https://j4hr3n.github.io/golfbox-mcp/
+```
+
 Lag en privat pakke for venner slik:
 
 ```bash
-npm run build:private-release
+bun run build:private-release
 ```
 
 Scriptet lager `release/golfbox-mcp-private-v0.1.0.zip` med:
