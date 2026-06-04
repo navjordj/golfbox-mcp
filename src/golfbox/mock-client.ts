@@ -8,13 +8,31 @@ import type {
   CreateBookingRequest,
   GolfBoxClient,
   TeeTimeSearch,
-  TeeTimeSlot
+  TeeTimeSlot,
+  Tournament
 } from "./types.js";
 
 const clubs: Club[] = [
   { id: "oslo-gk", name: "Oslo Golfklubb", country: "NO", region: "Oslo" },
   { id: "baerum-gk", name: "Baerum Golfklubb", country: "NO", region: "Akershus" },
   { id: "miklagard-golf", name: "Miklagard Golf", country: "NO", region: "Akershus" }
+];
+
+const tournaments: Tournament[] = [
+  {
+    tournamentId: "mock-competition-1",
+    name: "Mock Club Championship",
+    organizer: "Oslo Golfklubb",
+    startsAt: "2026-06-13T00:00:00+02:00",
+    endsAt: "2026-06-14T00:00:00+02:00"
+  },
+  {
+    tournamentId: "mock-competition-2",
+    name: "Mock Summer Open",
+    organizer: "Baerum Golfklubb",
+    startsAt: "2026-07-04T00:00:00+02:00",
+    endsAt: "2026-07-04T00:00:00+02:00"
+  }
 ];
 
 function toDateTime(date: string, time: string): string {
@@ -106,6 +124,10 @@ export class MockGolfBoxClient implements GolfBoxClient {
 
   async listBookings(): Promise<Booking[]> {
     return [...this.bookings.values()];
+  }
+
+  async listTournaments(): Promise<Tournament[]> {
+    return tournaments;
   }
 
   async createBooking(request: CreateBookingRequest): Promise<Booking> {

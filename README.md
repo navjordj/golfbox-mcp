@@ -1,6 +1,6 @@
 # GolfBox MCP
 
-GolfBox MCP is a local MCP server for GolfBox tee-time workflows. It lets compatible agent clients authenticate with GolfBox, list clubs, search tee times, list bookings, and prepare bookings with conservative safety defaults.
+GolfBox MCP is a local MCP server for GolfBox tee-time workflows. It lets compatible agent clients authenticate with GolfBox, list clubs, search tee times, list bookings, list tournaments, and prepare bookings with conservative safety defaults.
 
 The server runs locally. GolfBox credentials stay on the user's machine, and booking or cancellation tools are disabled unless explicitly enabled.
 
@@ -75,6 +75,7 @@ If you already have a valid MobileHub token, set `GOLFBOX_API_TOKEN` instead of 
 - `golfbox_list_clubs`: list GolfBox clubs known by the adapter.
 - `golfbox_search_tee_times`: search available tee times for a club and date.
 - `golfbox_list_bookings`: list tee-time bookings for the authenticated user.
+- `golfbox_list_tournaments`: list tournaments the authenticated user is registered for or has participated in.
 - `golfbox_prepare_booking`: validate and summarize a booking without creating it.
 - `golfbox_create_booking`: create a booking when write tools are enabled and confirmed.
 - `golfbox_cancel_booking`: cancel a booking when write tools are enabled and confirmed.

@@ -87,6 +87,16 @@ export function registerGolfBoxTools(server: McpServer, client: GolfBoxClient, c
   );
 
   server.registerTool(
+    "golfbox_list_tournaments",
+    {
+      title: "List GolfBox tournaments",
+      description: "List tournaments the authenticated GolfBox user is registered for or has participated in.",
+      inputSchema: {}
+    },
+    async () => jsonResult(await client.listTournaments())
+  );
+
+  server.registerTool(
     "golfbox_prepare_booking",
     {
       title: "Prepare booking",

@@ -9,7 +9,8 @@ import type {
   CreateBookingRequest,
   GolfBoxClient,
   TeeTimeSearch,
-  TeeTimeSlot
+  TeeTimeSlot,
+  Tournament
 } from "./types.js";
 import {
   fetchWithTimeout,
@@ -139,6 +140,14 @@ interface TeeTimeResponse {
   ConfirmationWindowOpen?: unknown;
   ResourceSettings?: unknown;
   Players?: TeeTimePlayerResponse[];
+}
+
+interface TournamentPlayerResponse {
+  CompetitionId?: unknown;
+  CustomerName?: unknown;
+  EndDate?: unknown;
+  Name?: unknown;
+  StartDate?: unknown;
 }
 
 interface PlayerSearchResponse {
@@ -313,6 +322,21 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
     return teeTimes
       .map((teeTime) => mapBookingListItem(teeTime, user))
       .filter((booking): booking is Booking => booking !== undefined);
+  }
+
+  async listTournaments(): Promise<Tournament[]> {
+    await this.getAuthenticatedUser();
+
+    const response = await this.authorizedJsonRequest<unknown>("/tournament?methodName=tournamentsForPlayer", {
+      method: "GET",
+      headers: {
+        Accept: "application/json"
+      }
+    });
+
+    return parseTournamentResponses(response)
+      .map(mapTournamentListItem)
+      .filter((tournament): tournament is Tournament => tournament !== undefined);
   }
 
   async prepareBooking(draft: BookingDraft): Promise<BookingPreparation> {
@@ -1381,6 +1405,16 @@ function formatGolfBoxDateTime(teeTime: string): string {
   return `${golfBoxDateTimeToIsoDate(teeTime)} ${golfBoxDateTimeToTimeOfDay(teeTime)}`;
 }
 
+function golfBoxDateTimeToIso(value: unknown): string | undefined {
+  const text = toOptionalString(value);
+  if (!text || !/^\d{8}T\d{6}$/.test(text)) {
+    return undefined;
+  }
+
+  const date = golfBoxDateTimeToIsoDate(text);
+  return toNorwayLocalIso(date, golfBoxDateTimeToTimeOfDay(text));
+}
+
 function parseTeeTimeResponse(value: unknown): TeeTimeResponse {
   const record = pickRecord(value, "TeeTime", "Data", "Result");
   if (!record) {
@@ -1553,6 +1587,49 @@ function parseTeeTimeResponses(value: unknown): TeeTimeResponse[] {
 
   const single = pickRecord(value, "TeeTime", "Data", "Result");
   return single ? [single as TeeTimeResponse] : [];
+}
+
+function parseTournamentResponses(value: unknown): TournamentPlayerResponse[] {
+  if (Array.isArray(value)) {
+    return value.filter(isRecord) as TournamentPlayerResponse[];
+  }
+
+  const values = pickArray(value, "Tournaments", "Competitions", "Items", "Data", "Result");
+  if (values.length > 0) {
+    return values.filter(isRecord) as TournamentPlayerResponse[];
+  }
+
+  const single = pickRecord(value, "Tournament", "Competition", "Data", "Result");
+  return single ? [single as TournamentPlayerResponse] : [];
+}
+
+function mapTournamentListItem(response: TournamentPlayerResponse): Tournament | undefined {
+  const tournamentId = toOptionalString(response.CompetitionId);
+  const name = toOptionalString(response.Name);
+  if (!tournamentId || !name) {
+    return undefined;
+  }
+
+  const mapped: Tournament = {
+    tournamentId,
+    name
+  };
+  const organizer = toOptionalString(response.CustomerName);
+  if (organizer) {
+    mapped.organizer = organizer;
+  }
+
+  const startsAt = golfBoxDateTimeToIso(response.StartDate);
+  if (startsAt) {
+    mapped.startsAt = startsAt;
+  }
+
+  const endsAt = golfBoxDateTimeToIso(response.EndDate);
+  if (endsAt) {
+    mapped.endsAt = endsAt;
+  }
+
+  return mapped;
 }
 
 function findTeeTimeForSlot(teeTimes: TeeTimeResponse[], slot: SlotKey): TeeTimeResponse | undefined {

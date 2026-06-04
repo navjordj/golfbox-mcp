@@ -517,6 +517,63 @@ test("official client lists authenticated player bookings", async () => {
   );
 });
 
+test("official client lists authenticated player tournaments", async () => {
+  await withMockFetch(
+    (url) => {
+      if (url.pathname === "/authentication") {
+        return textResponse("tournament-token");
+      }
+
+      if (url.pathname === "/profile/member") {
+        return jsonResponse({
+          Guid: "user-guid",
+          ClubGuid: "member-club-guid",
+          HasAccessToBooking: true
+        });
+      }
+
+      if (url.pathname === "/tournament" && url.searchParams.get("methodName") === "tournamentsForPlayer") {
+        return jsonResponse({
+          SearchFrom: "20250604T073105",
+          SearchTo: "20270604T073105",
+          Tournaments: [
+            {
+              CompetitionId: 5329410,
+              CustomerName: "Norwegian Golf Federation",
+              EndDate: "20260614T000000",
+              Name: "Summer Cup",
+              StartDate: "20260613T000000"
+            }
+          ]
+        });
+      }
+
+      return new Response("", { status: 404 });
+    },
+    async () => {
+      const client = new OfficialGolfBoxClient({
+        apiBaseUrl: "https://example.test/",
+        allowUntrustedGolfBoxUrls: true,
+        username: "member@example.com",
+        password: "secret",
+        country: "NO"
+      });
+
+      const tournaments = await client.listTournaments();
+
+      assert.deepEqual(tournaments, [
+        {
+          tournamentId: "5329410",
+          name: "Summer Cup",
+          organizer: "Norwegian Golf Federation",
+          startsAt: "2026-06-13T00:00:00+02:00",
+          endsAt: "2026-06-14T00:00:00+02:00"
+        }
+      ]);
+    }
+  );
+});
+
 test("official client creates booking via try-edit and save", async () => {
   const slotId = "resource-1|20260601T081000|member-club-guid";
 

@@ -28,3 +28,12 @@ test("mock client flags impossible booking drafts", async () => {
   assert.equal(preparation.ready, false);
   assert.equal(preparation.warnings.length, 1);
 });
+
+test("mock client returns tournaments", async () => {
+  const client = new MockGolfBoxClient();
+
+  const tournaments = await client.listTournaments();
+
+  assert.equal(tournaments.length, 2);
+  assert.deepEqual(Object.keys(tournaments[0]).sort(), ["endsAt", "name", "organizer", "startsAt", "tournamentId"]);
+});

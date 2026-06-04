@@ -60,6 +60,14 @@ export interface Booking {
   summary: string;
 }
 
+export interface Tournament {
+  tournamentId: string;
+  name: string;
+  organizer?: string;
+  startsAt?: string;
+  endsAt?: string;
+}
+
 export interface CancelBookingRequest {
   bookingId: string;
   confirmedByUser: boolean;
@@ -95,6 +103,7 @@ export interface GolfBoxClient {
   listClubs(): Promise<Club[]>;
   searchTeeTimes(search: TeeTimeSearch): Promise<TeeTimeSlot[]>;
   listBookings(): Promise<Booking[]>;
+  listTournaments(): Promise<Tournament[]>;
   prepareBooking(draft: BookingDraft): Promise<BookingPreparation>;
   createBooking(request: CreateBookingRequest): Promise<Booking>;
   cancelBooking(request: CancelBookingRequest): Promise<Booking>;

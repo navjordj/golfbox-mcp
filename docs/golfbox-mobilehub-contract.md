@@ -235,6 +235,34 @@ These are used when the booking requires payment or payment also confirms the te
 
 For a first MCP implementation, keep paid bookings read-only or require a human confirmation step before any payment action.
 
+## Tournament Endpoints
+
+Validated with an authenticated read-only request on 2026-06-04.
+
+| Method | Path | Accept | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/tournament?methodName=tournamentsForPlayer` | JSON | List tournaments the logged-in player is registered for or has participated in. |
+
+The same payload was also returned from `/tournament/player?methodName=tournamentsForPlayer` and `/tournament/registration?methodName=tournamentsForPlayer` during discovery, but the MCP uses the shorter `/tournament` route.
+
+Response shape:
+
+```json
+{
+  "SearchFrom": "20250604T073105",
+  "SearchTo": "20270604T073105",
+  "Tournaments": [
+    {
+      "CompetitionId": 5329410,
+      "CustomerName": "Organizer name",
+      "EndDate": "20260614T000000",
+      "Name": "Tournament name",
+      "StartDate": "20260613T000000"
+    }
+  ]
+}
+```
+
 ## Error Headers
 
 The app reads these response headers:
