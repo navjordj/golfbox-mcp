@@ -60,6 +60,34 @@ export interface Booking {
   summary: string;
 }
 
+export interface UpcomingTeeTimeSearch {
+  fromDate?: string;
+  daysAhead?: number;
+  clubId?: string;
+  clubIds?: string[];
+}
+
+export interface UpcomingTeeTimePlayer {
+  name?: string;
+  memberNumber?: string;
+  clubName?: string;
+  isCurrentUser?: boolean;
+  confirmed?: boolean;
+  confirmable?: boolean;
+}
+
+export interface UpcomingTeeTime {
+  slotId: string;
+  startsAt: string;
+  clubName: string;
+  courseName: string;
+  status: "confirmed" | "pending";
+  playerCount: number;
+  players: UpcomingTeeTimePlayer[];
+  source: "teeTimesForPlayer" | "gimmie" | "webPortal";
+  summary: string;
+}
+
 export interface Tournament {
   tournamentId: string;
   name: string;
@@ -103,6 +131,7 @@ export interface GolfBoxClient {
   listClubs(): Promise<Club[]>;
   searchTeeTimes(search: TeeTimeSearch): Promise<TeeTimeSlot[]>;
   listBookings(): Promise<Booking[]>;
+  listUpcomingTeeTimes(search?: UpcomingTeeTimeSearch): Promise<UpcomingTeeTime[]>;
   listTournaments(): Promise<Tournament[]>;
   prepareBooking(draft: BookingDraft): Promise<BookingPreparation>;
   createBooking(request: CreateBookingRequest): Promise<Booking>;

@@ -37,3 +37,13 @@ test("mock client returns tournaments", async () => {
   assert.equal(tournaments.length, 2);
   assert.deepEqual(Object.keys(tournaments[0]).sort(), ["endsAt", "name", "organizer", "startsAt", "tournamentId"]);
 });
+
+test("mock client returns upcoming private tee times", async () => {
+  const client = new MockGolfBoxClient();
+
+  const teeTimes = await client.listUpcomingTeeTimes({ fromDate: "2026-06-01", daysAhead: 90 });
+
+  assert.equal(teeTimes.length, 2);
+  assert.equal(teeTimes[0].source, "teeTimesForPlayer");
+  assert.equal(teeTimes[0].players[0].isCurrentUser, true);
+});

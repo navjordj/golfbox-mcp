@@ -87,6 +87,21 @@ export function registerGolfBoxTools(server: McpServer, client: GolfBoxClient, c
   );
 
   server.registerTool(
+    "golfbox_list_upcoming_tee_times",
+    {
+      title: "List upcoming GolfBox tee times",
+      description: "List upcoming private tee times for the authenticated GolfBox user.",
+      inputSchema: {
+        fromDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        daysAhead: z.number().int().min(1).max(180).optional(),
+        clubId: z.string().min(1).optional(),
+        clubIds: z.array(z.string().min(1)).max(20).optional()
+      }
+    },
+    async (input) => jsonResult(await client.listUpcomingTeeTimes(input))
+  );
+
+  server.registerTool(
     "golfbox_list_tournaments",
     {
       title: "List GolfBox tournaments",

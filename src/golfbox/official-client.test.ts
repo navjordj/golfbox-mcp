@@ -66,6 +66,37 @@ function xmlResponse(xml: string): Response {
   });
 }
 
+function webMineTiderCard(input: {
+  date: string;
+  time: string;
+  club: string;
+  course: string;
+  resourceGuid: string;
+  bookingStart: string;
+  players: string[];
+}): string {
+  return `
+    <div class="border border-success bg-selected rounded p-3">
+      <div class="d-flex">
+        <div class="d-flex justify-content-between flex-column flex-sm-row flex-grow-1">
+          <div class="d-flex flex-column w-100">
+            <div class="d-flex align-items-center text-capitalize"><div><svg></svg></div>${input.date}</div>
+            <div class="d-flex align-items-center mt-3"><div><svg></svg></div>${input.time}</div>
+          </div>
+          <div class="d-flex flex-column w-100">
+            <div class="d-flex align-items-center mt-3 mt-sm-0"><div><svg></svg></div>${input.club}</div>
+            <div class="d-flex align-items-center mt-3"><div><svg></svg></div>${input.course}</div>
+          </div>
+        </div>
+        <a href="/site/ressources/booking/grid.asp?makeWindowPop=1&Ressource_GUID=${input.resourceGuid}&Booking_Start=${input.bookingStart}">Gå til tiden</a>
+      </div>
+      <div class="mt-3">
+        ${input.players.map((player) => `<div class="px-2 py-1">${player}</div>`).join("")}
+      </div>
+    </div>
+  `;
+}
+
 function responseAfterAbort(signal: RequestInit["signal"]): Promise<Response> {
   const abortSignal = signal as AbortSignal | undefined;
   if (!abortSignal) {
@@ -106,7 +137,8 @@ test("official client authenticates and validates token with login", async () =>
           MemberNumber: "12345",
           CountryIsoCode: "NO",
           HasAccessToBooking: true,
-          UseNewApp: true
+          UseNewApp: true,
+          NewAppSSOToken: "11111111-2222-3333-4444-555555555555"
         });
       }
 
@@ -133,10 +165,12 @@ test("official client authenticates and validates token with login", async () =>
       assert.equal(status.user?.guid, "user-guid");
       assert.equal(status.user?.fullName, "Ada Lovelace");
       assert.equal(status.user?.hasAccessToBooking, true);
+      assert.equal("newAppSsoToken" in (status.user ?? {}), false);
 
       assert.equal(requests[0]?.method, "POST");
       assert.match(requests[0]?.url ?? "", /^https:\/\/example\.test\/authentication/);
-      assert.match(requests[0]?.headers.get("Client-User-Agent") ?? "", /AppCountry:NO;/);
+      assert.match(requests[0]?.headers.get("Client-User-Agent") ?? "", /AppCountry:DK;/);
+      assert.match(requests[0]?.headers.get("Client-User-Agent") ?? "", /AppUserCountryNO;/);
       assert.match(requests[0]?.headers.get("Client-User-Agent") ?? "", /AppVersion:2\.7\.003;/);
     }
   );
@@ -459,6 +493,75 @@ test("official client keeps portal-open slots even when touch flags are set", as
   );
 });
 
+test("official client keeps future slots that GolfBox lists before portal booking opens", async () => {
+  await withMockFetch(
+    (url) => {
+      if (url.pathname === "/authentication") {
+        return textResponse("search-token");
+      }
+
+      if (url.pathname === "/profile/member") {
+        return jsonResponse({
+          Guid: "user-guid",
+          ClubGuid: "member-club-guid",
+          HasAccessToBooking: true
+        });
+      }
+
+      if (url.pathname === "/teeTime/booking" && url.searchParams.get("methodName") === "resourcesForClub") {
+        return jsonResponse([
+          {
+            Guid: "resource-1",
+            Name: "Hovedbanen"
+          }
+        ]);
+      }
+
+      if (url.pathname === "/teeTime/booking" && url.searchParams.get("methodName") === "teeTimesForDay") {
+        return xmlResponse(`
+          <root>
+            <Setup MaxNumberOfPlayers="4" Ressource_GUID="resource-1" Ressource_Name="Hovedbanen" />
+            <slot time="20260620T070000" portalClosed="0" touchClosed="0" isTooFarAheadPortal="1" isTooFarAheadTouch="1" isBlank="false" ymPrice="845" />
+            <slot time="20260620T070900" portalClosed="1" touchClosed="0" isTooFarAheadPortal="0" isTooFarAheadTouch="0" isBlank="false" />
+          </root>
+        `);
+      }
+
+      return new Response("", { status: 404 });
+    },
+    async () => {
+      const client = new OfficialGolfBoxClient({
+        apiBaseUrl: "https://example.test/",
+        allowUntrustedGolfBoxUrls: true,
+        username: "member@example.com",
+        password: "secret",
+        country: "NO"
+      });
+
+      const slots = await client.searchTeeTimes({
+        clubId: "club-guid",
+        date: "2026-06-20",
+        players: 1,
+        earliestTime: "07:00",
+        latestTime: "08:00"
+      });
+
+      assert.deepEqual(slots, [
+        {
+          slotId: "resource-1|20260620T070000|member-club-guid",
+          clubId: "club-guid",
+          courseName: "Hovedbanen",
+          startsAt: "2026-06-20T07:00:00+02:00",
+          holes: 18,
+          availableSpots: 4,
+          priceNok: 845,
+          notes: ["GolfBox lists this future tee time, but portal booking is not open yet."]
+        }
+      ]);
+    }
+  );
+});
+
 test("official client lists authenticated player bookings", async () => {
   await withMockFetch(
     (url) => {
@@ -515,6 +618,906 @@ test("official client lists authenticated player bookings", async () => {
       ]);
     }
   );
+});
+
+test("official client maps lower-camel player bookings", async () => {
+  await withMockFetch(
+    (url) => {
+      if (url.pathname === "/authentication") {
+        return textResponse("booking-token");
+      }
+
+      if (url.pathname === "/profile/member") {
+        return jsonResponse({
+          Guid: "user-guid",
+          ClubGuid: "member-club-guid",
+          HasAccessToBooking: true
+        });
+      }
+
+      if (url.pathname === "/teeTime/booking" && url.searchParams.get("methodName") === "teeTimesForPlayer") {
+        return jsonResponse([
+          {
+            resourceGuid: "resource-1",
+            resourceName: "Hovedbanen",
+            teeTime: "2026-06-01T08:10:00",
+            bookingGroupGuid: "group-1",
+            players: [
+              {
+                bookingGuid: "booking-1",
+                confirmable: true,
+                confirmed: false
+              }
+            ]
+          }
+        ]);
+      }
+
+      return new Response("", { status: 404 });
+    },
+    async () => {
+      const client = new OfficialGolfBoxClient({
+        apiBaseUrl: "https://example.test/",
+        allowUntrustedGolfBoxUrls: true,
+        username: "member@example.com",
+        password: "secret",
+        country: "NO"
+      });
+
+      const bookings = await client.listBookings();
+
+      assert.deepEqual(bookings, [
+        {
+          bookingId: "resource-1|20260601T081000|member-club-guid",
+          status: "pending",
+          slotId: "resource-1|20260601T081000|member-club-guid",
+          summary: "Hovedbanen: 2026-06-01 08:10 for 1 player. GolfBox reference: group-1."
+        }
+      ]);
+    }
+  );
+});
+
+test("official client maps upcoming tee times from lower-camel teeTimesForPlayer across clubs", async () => {
+  await withMockFetch(
+    (url) => {
+      if (url.pathname === "/authentication") {
+        return textResponse("upcoming-token");
+      }
+
+      if (url.pathname === "/profile/member") {
+        return jsonResponse({
+          Guid: "user-guid",
+          FullName: "Ada Lovelace",
+          ClubGuid: "member-club-guid",
+          ClubName: "Onsøy Golfklubb",
+          MemberNumber: "20-11297",
+          HasAccessToBooking: true
+        });
+      }
+
+      if (url.pathname === "/teeTime/booking" && url.searchParams.get("methodName") === "teeTimesForPlayer") {
+        return jsonResponse([
+          {
+            clubGuid: "baerum-club-guid",
+            clubName: "Bærum Golfklubb",
+            resourceGuid: "baerum-resource",
+            resourceName: "Bærum Golfbane 18 hull",
+            teeTime: "2026-06-07T09:00:00",
+            players: [
+              {
+                memberGuid: "other-player-guid",
+                memberNumber: "102-14007",
+                firstName: "Adrian",
+                lastName: "Moksness",
+                clubName: "Preikestolen Golfklubb",
+                confirmed: true
+              },
+              {
+                memberGuid: "user-guid",
+                memberNumber: "20-11297",
+                firstName: "Ada",
+                lastName: "Lovelace",
+                clubName: "Onsøy Golfklubb",
+                confirmable: true,
+                confirmed: false
+              }
+            ]
+          },
+          {
+            clubGuid: "onsoy-club-guid",
+            clubName: "Onsøy Golfklubb",
+            resourceGuid: "onsoy-resource",
+            resourceName: "18 hulls banen",
+            teeTime: "20260618T195400",
+            players: [
+              {
+                memberGuid: "user-guid",
+                memberNumber: "20-11297",
+                fullName: "Ada Lovelace",
+                clubName: "Onsøy Golfklubb",
+                confirmed: true
+              }
+            ]
+          },
+          {
+            clubGuid: "old-club-guid",
+            clubName: "Old Golfklubb",
+            resourceGuid: "old-resource",
+            resourceName: "Old Course",
+            teeTime: "20260501T090000",
+            players: []
+          }
+        ]);
+      }
+
+      if (url.pathname === "/teeTime/booking" && url.searchParams.get("methodName") === "resourcesForClub") {
+        throw new Error("resourcesForClub should not be called when teeTimesForPlayer returns upcoming tee times.");
+      }
+
+      return new Response("", { status: 404 });
+    },
+    async () => {
+      const client = new OfficialGolfBoxClient({
+        apiBaseUrl: "https://example.test/",
+        allowUntrustedGolfBoxUrls: true,
+        username: "member@example.com",
+        password: "secret",
+        country: "NO"
+      });
+
+      const teeTimes = await client.listUpcomingTeeTimes({ fromDate: "2026-06-04" });
+
+      assert.deepEqual(
+        teeTimes.map((teeTime) => ({
+          slotId: teeTime.slotId,
+          startsAt: teeTime.startsAt,
+          clubName: teeTime.clubName,
+          courseName: teeTime.courseName,
+          source: teeTime.source,
+          playerCount: teeTime.playerCount,
+          currentUser: teeTime.players.find((player) => player.isCurrentUser)?.name
+        })),
+        [
+          {
+            slotId: "baerum-resource|20260607T090000|member-club-guid",
+            startsAt: "2026-06-07T09:00:00+02:00",
+            clubName: "Bærum Golfklubb",
+            courseName: "Bærum Golfbane 18 hull",
+            source: "teeTimesForPlayer",
+            playerCount: 2,
+            currentUser: "Ada Lovelace"
+          },
+          {
+            slotId: "onsoy-resource|20260618T195400|member-club-guid",
+            startsAt: "2026-06-18T19:54:00+02:00",
+            clubName: "Onsøy Golfklubb",
+            courseName: "18 hulls banen",
+            source: "teeTimesForPlayer",
+            playerCount: 1,
+            currentUser: "Ada Lovelace"
+          }
+        ]
+      );
+    }
+  );
+});
+
+test("official client treats upcoming club IDs as filters, not day-grid scan hints", async () => {
+  await withMockFetch(
+    (url) => {
+      if (url.pathname === "/authentication") {
+        return textResponse("upcoming-token");
+      }
+
+      if (url.pathname === "/profile/member") {
+        return jsonResponse({
+          Guid: "user-guid",
+          FullName: "Ada Lovelace",
+          ClubGuid: "member-club-guid",
+          ClubName: "Onsøy Golfklubb",
+          MemberNumber: "20-11297",
+          HasAccessToBooking: true
+        });
+      }
+
+      if (url.pathname === "/teeTime/booking" && url.searchParams.get("methodName") === "teeTimesForPlayer") {
+        return jsonResponse([
+          {
+            clubGuid: "baerum-club-guid",
+            clubName: "Bærum Golfklubb",
+            resourceGuid: "baerum-resource",
+            resourceName: "Bærum Golfbane 18 hull",
+            teeTime: "20260607T090000",
+            players: [{ memberGuid: "user-guid", memberNumber: "20-11297", fullName: "Ada Lovelace" }]
+          },
+          {
+            clubGuid: "onsoy-club-guid",
+            clubName: "Onsøy Golfklubb",
+            resourceGuid: "onsoy-resource",
+            resourceName: "18 hulls banen",
+            teeTime: "20260618T195400",
+            players: [{ memberGuid: "user-guid", memberNumber: "20-11297", fullName: "Ada Lovelace" }]
+          }
+        ]);
+      }
+
+      if (url.pathname === "/teeTime/booking" && url.searchParams.get("methodName") === "resourcesForClub") {
+        throw new Error("resourcesForClub should not be called by the upcoming private tee-times tool.");
+      }
+
+      if (url.pathname === "/teeTime/booking" && url.searchParams.get("methodName") === "teeTimesForDay") {
+        throw new Error("teeTimesForDay should not be called by the upcoming private tee-times tool.");
+      }
+
+      return new Response("", { status: 404 });
+    },
+    async () => {
+      const client = new OfficialGolfBoxClient({
+        apiBaseUrl: "https://example.test/",
+        allowUntrustedGolfBoxUrls: true,
+        username: "member@example.com",
+        password: "secret",
+        country: "NO"
+      });
+
+      const teeTimes = await client.listUpcomingTeeTimes({
+        fromDate: "2026-06-04",
+        clubIds: ["baerum-club-guid"]
+      });
+
+      assert.deepEqual(teeTimes.map((teeTime) => teeTime.clubName), ["Bærum Golfklubb"]);
+    }
+  );
+});
+
+test("official client returns empty when teeTimesForPlayer has no upcoming private tee times", async () => {
+  await withMockFetch(
+    (url) => {
+      if (url.pathname === "/authentication") {
+        return textResponse("upcoming-token");
+      }
+
+      if (url.pathname === "/profile/member") {
+        return jsonResponse({
+          Guid: "user-guid",
+          FullName: "Ada Lovelace",
+          ClubGuid: "member-club-guid",
+          MemberNumber: "20-11297",
+          HasAccessToBooking: true
+        });
+      }
+
+      if (url.pathname === "/teeTime/booking" && url.searchParams.get("methodName") === "teeTimesForPlayer") {
+        return jsonResponse([]);
+      }
+
+      if (url.pathname === "/teeTime/booking" && url.searchParams.get("methodName") === "resourcesForClub") {
+        throw new Error("resourcesForClub should not be called by the upcoming private tee-times tool.");
+      }
+
+      if (url.pathname === "/teeTime/booking" && url.searchParams.get("methodName") === "teeTimesForDay") {
+        throw new Error("teeTimesForDay should not be called by the upcoming private tee-times tool.");
+      }
+
+      return new Response("", { status: 404 });
+    },
+    async () => {
+      const client = new OfficialGolfBoxClient({
+        apiBaseUrl: "https://example.test/",
+        allowUntrustedGolfBoxUrls: true,
+        username: "member@example.com",
+        password: "secret",
+        country: "NO"
+      });
+
+      assert.deepEqual(await client.listUpcomingTeeTimes({ fromDate: "2026-06-07", daysAhead: 1 }), []);
+    }
+  );
+});
+
+test("official client does not silently return empty upcoming tee times for useNewApp accounts", async () => {
+  await withMockFetch(
+    (url) => {
+      if (url.pathname === "/authentication") {
+        return textResponse("upcoming-token");
+      }
+
+      if (url.pathname === "/profile/member") {
+        return jsonResponse({
+          Guid: "user-guid",
+          ClubGuid: "member-club-guid",
+          MemberNumber: "20-11297",
+          HasAccessToBooking: true,
+          UseNewApp: true,
+          NewAppSSOToken: "11111111-2222-3333-4444-555555555555"
+        });
+      }
+
+      if (url.pathname === "/teeTime/booking" && url.searchParams.get("methodName") === "teeTimesForPlayer") {
+        return jsonResponse([]);
+      }
+
+      if (url.pathname === "/appLogic" && url.searchParams.get("methodName") === "validateClientv3") {
+        return jsonResponse({
+          ClientIsValid: true,
+          FrontPageURL: "http://www.golfbox.no//external/internationalLogin/receiveSSO.asp?token=(tokenGuid)",
+          TeeTimeURL:
+            "http://www.golfbox.no//external/internationalLogin/receiveSSO.asp?token=(tokenGuid)&rURL=/site/my_golfbox/ressources/booking/grid.asp?Ressource_GUID=(resourceGuid)&Booking_Start=(teeTime)"
+        });
+      }
+
+      return new Response("", { status: 404 });
+    },
+    async () => {
+      const client = new OfficialGolfBoxClient({
+        apiBaseUrl: "https://example.test/",
+        allowUntrustedGolfBoxUrls: true,
+        username: "member@example.com",
+        password: "secret",
+        country: "NO"
+      });
+
+      await assert.rejects(
+        () => client.listUpcomingTeeTimes({ fromDate: "2026-06-07", daysAhead: 1 }),
+        /Gimmie\/new-app API support is required/
+      );
+    }
+  );
+});
+
+test("official client maps upcoming tee times from authenticated Gimmie new-app flow", async () => {
+  await withMockFetch(
+    (url, init, headers, body) => {
+      if (url.pathname === "/authentication") {
+        return textResponse("upcoming-token");
+      }
+
+      if (url.pathname === "/profile/member") {
+        return jsonResponse({
+          Guid: "user-guid",
+          FullName: "Ada Lovelace",
+          ClubGuid: "member-club-guid",
+          MemberNumber: "20-11297",
+          HasAccessToBooking: true,
+          UseNewApp: true
+        });
+      }
+
+      if (url.pathname === "/teeTime/booking" && url.searchParams.get("methodName") === "teeTimesForPlayer") {
+        return jsonResponse([]);
+      }
+
+      if (url.pathname === "/appLogic" && url.searchParams.get("methodName") === "validateClientv3") {
+        return jsonResponse({
+          ClientIsValid: true,
+          FrontPageURL: "http://www.golfbox.no//external/internationalLogin/receiveSSO.asp?token=(tokenGuid)"
+        });
+      }
+
+      if (url.hostname === "be.glfr.com" && url.pathname === "/graphql") {
+        const payload = JSON.parse(body ?? "{}") as { query?: string };
+        if (payload.query?.includes("initGolfboxOauth")) {
+          return jsonResponse({
+            data: {
+              initGolfboxOauth: "https://auth.golfbox.io/connect/authorize?client_id=GLFR_no"
+            }
+          });
+        }
+
+        if (payload.query?.includes("continueWithAuth")) {
+          return jsonResponse({
+            data: {
+              continueWithAuth: {
+                id: "gimmie-user",
+                otp: "gimmie-otp"
+              }
+            }
+          });
+        }
+
+        if (payload.query?.includes("authMe")) {
+          return jsonResponse({
+            data: {
+              AuthQueries: {
+                authMe: {
+                  token: "gimmie-token"
+                }
+              }
+            }
+          });
+        }
+
+        if (payload.query?.includes("teeTimesWithProviders")) {
+          assert.equal(headers.get("x-auth-token"), "gimmie-token");
+          return jsonResponse({
+            data: {
+              teeTimesWithProviders: [
+                {
+                  bookingId: "booking-1",
+                  teeTime: "2026-06-07T09:00:00+02:00",
+                  clubName: "Bærum Golfklubb",
+                  guideName: "Bærum Golfbane 18 hull",
+                  org: "NGF",
+                  players: [{ memberId: "20-11297", name: "Ada Lovelace" }]
+                }
+              ]
+            }
+          });
+        }
+      }
+
+      if (url.hostname === "auth.golfbox.io" && url.pathname === "/connect/authorize") {
+        return new Response("", {
+          status: 302,
+          headers: { Location: "https://auth.golfbox.io/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback" }
+        });
+      }
+
+      if (url.hostname === "auth.golfbox.io" && url.pathname === "/Login" && init.method === "GET") {
+        return new Response(
+          '<form method="post"><input name="ReturnUrl" value="/connect/authorize/callback?x=1&amp;y=2"><input name="__RequestVerificationToken" value="csrf"></form>',
+          { status: 200, headers: { "Content-Type": "text/html" } }
+        );
+      }
+
+      if (url.hostname === "auth.golfbox.io" && url.pathname === "/Login" && init.method === "POST") {
+        return new Response("", {
+          status: 302,
+          headers: { Location: "https://auth.golfbox.io/connect/authorize/callback?code=oauth-code" }
+        });
+      }
+
+      if (url.hostname === "auth.golfbox.io" && url.pathname === "/connect/authorize/callback") {
+        return new Response("", {
+          status: 302,
+          headers: { Location: "https://be.glfr.com/oauth/golfbox?code=oauth-code" }
+        });
+      }
+
+      if (url.hostname === "be.glfr.com" && url.pathname === "/oauth/golfbox") {
+        return new Response("", {
+          status: 303,
+          headers: { Location: "com.glfr.ngf://NGF/provider-token" }
+        });
+      }
+
+      return new Response("", { status: 404 });
+    },
+    async () => {
+      const client = new OfficialGolfBoxClient({
+        apiBaseUrl: "https://example.test/",
+        allowUntrustedGolfBoxUrls: true,
+        username: "member@example.com",
+        password: "secret",
+        country: "NO"
+      });
+
+      const teeTimes = await client.listUpcomingTeeTimes({ fromDate: "2026-06-05", daysAhead: 28 });
+      assert.deepEqual(teeTimes, [
+        {
+          slotId: "gimmie|NGF|booking-1",
+          startsAt: "2026-06-07T09:00:00+02:00",
+          clubName: "Bærum Golfklubb",
+          courseName: "Bærum Golfbane 18 hull",
+          status: "pending",
+          playerCount: 1,
+          players: [{ name: "Ada Lovelace", memberNumber: "20-11297", isCurrentUser: true }],
+          source: "gimmie",
+          summary: "Bærum Golfbane 18 hull: 2026-06-07T09:00:00+02:00 for 1 player."
+        }
+      ]);
+    }
+  );
+});
+
+test("official client falls back to web Mine tider when UseNewApp MobileHub and Gimmie are empty", async () => {
+  await withMockFetch(
+    (url, init, headers, body) => {
+      if (url.pathname === "/authentication") {
+        return textResponse("upcoming-token");
+      }
+
+      if (url.pathname === "/profile/member") {
+        return jsonResponse({
+          Guid: "user-guid",
+          FullName: "Christoffer Jahren",
+          ClubGuid: "member-club-guid",
+          MemberNumber: "20-11297",
+          HasAccessToBooking: true,
+          UseNewApp: true
+        });
+      }
+
+      if (url.pathname === "/teeTime/booking" && url.searchParams.get("methodName") === "teeTimesForPlayer") {
+        return jsonResponse([]);
+      }
+
+      if (url.pathname === "/appLogic" && url.searchParams.get("methodName") === "validateClientv3") {
+        return jsonResponse({
+          ClientIsValid: true,
+          FrontPageURL: "http://www.golfbox.no//external/internationalLogin/receiveSSO.asp?token=(tokenGuid)"
+        });
+      }
+
+      if (url.hostname === "be.glfr.com" && url.pathname === "/graphql") {
+        const payload = JSON.parse(body ?? "{}") as { query?: string };
+        if (payload.query?.includes("initGolfboxOauth")) {
+          return jsonResponse({
+            data: {
+              initGolfboxOauth: "https://auth.golfbox.io/connect/authorize?client_id=GLFR_no"
+            }
+          });
+        }
+
+        if (payload.query?.includes("continueWithAuth")) {
+          return jsonResponse({
+            data: {
+              continueWithAuth: {
+                id: "gimmie-user",
+                otp: "gimmie-otp"
+              }
+            }
+          });
+        }
+
+        if (payload.query?.includes("authMe")) {
+          return jsonResponse({
+            data: {
+              AuthQueries: {
+                authMe: {
+                  token: "gimmie-token"
+                }
+              }
+            }
+          });
+        }
+
+        if (payload.query?.includes("teeTimesWithProviders")) {
+          assert.equal(headers.get("x-auth-token"), "gimmie-token");
+          return jsonResponse({
+            data: {
+              teeTimesWithProviders: []
+            }
+          });
+        }
+      }
+
+      if (url.hostname === "auth.golfbox.io" && url.pathname === "/connect/authorize") {
+        return new Response("", {
+          status: 302,
+          headers: { Location: "https://auth.golfbox.io/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback" }
+        });
+      }
+
+      if (url.hostname === "auth.golfbox.io" && url.pathname === "/Login" && init.method === "GET") {
+        return new Response(
+          '<form method="post"><input name="ReturnUrl" value="/connect/authorize/callback?x=1&amp;y=2"><input name="__RequestVerificationToken" value="csrf"></form>',
+          { status: 200, headers: { "Content-Type": "text/html" } }
+        );
+      }
+
+      if (url.hostname === "auth.golfbox.io" && url.pathname === "/Login" && init.method === "POST") {
+        return new Response("", {
+          status: 302,
+          headers: { Location: "https://auth.golfbox.io/connect/authorize/callback?code=oauth-code" }
+        });
+      }
+
+      if (url.hostname === "auth.golfbox.io" && url.pathname === "/connect/authorize/callback") {
+        return new Response("", {
+          status: 302,
+          headers: { Location: "https://be.glfr.com/oauth/golfbox?code=oauth-code" }
+        });
+      }
+
+      if (url.hostname === "be.glfr.com" && url.pathname === "/oauth/golfbox") {
+        return new Response("", {
+          status: 303,
+          headers: { Location: "com.glfr.ngf://NGF/provider-token" }
+        });
+      }
+
+      if (url.hostname === "web.example.test" && url.pathname === "/site/system/redirect.asp") {
+        return new Response("", {
+          status: 302,
+          headers: { Location: "/login.asp" }
+        });
+      }
+
+      if (url.hostname === "web.example.test" && url.pathname === "/login.asp" && init.method === "POST") {
+        return textResponse("<html>Logged in</html>");
+      }
+
+      if (url.hostname === "web.example.test" && url.pathname === "/site/ressources/booking/grid.asp") {
+        return textResponse("<html>Grid</html>");
+      }
+
+      if (url.hostname === "web.example.test" && url.pathname === "/site/my_golfbox/ressources/booking/grid.asp") {
+        return textResponse(`
+          <a href="/site/ressources/booking/autoselect_ressource.asp">Starttidsbestilling</a>
+          <a title="Mine tider" href="/site/my_golfBox/myTimes/myTimes.asp?selected={317B9D5E-1D76-4330-8BAC-2D3966D8D0EB}">Mine tider</a>
+        `);
+      }
+
+      if (url.hostname === "web.example.test" && url.pathname === "/site/my_golfBox/myTimes/myTimes.asp") {
+        return textResponse(`
+          <form name="frmPageForm">
+            <div class="card mb-4">
+              <div class="card-header"><h3>Mine tider</h3></div>
+              <div class="card-body border-bottom">
+                ${webMineTiderCard({
+                  date: "lørdag 06.06.2026",
+                  time: "08:03",
+                  club: "Onsøy Golfklubb",
+                  course: "18 hulls banen",
+                  resourceGuid: "{884D570B-7F66-4ECD-88E2-215E3B386422}",
+                  bookingStart: "20260606T080300",
+                  players: [
+                    "1 Christoffer Jahren 20-11297 Onsøy Golfklubb +1,2 bestilt",
+                    "2 Stian Knudsen 20-11218 Onsøy Golfklubb 3,7 bestilt"
+                  ]
+                })}
+                ${webMineTiderCard({
+                  date: "søndag 07.06.2026",
+                  time: "09:00",
+                  club: "Bærum Golfklubb",
+                  course: "Bærum Golfbane 18 hull",
+                  resourceGuid: "{BAERUM-RESOURCE}",
+                  bookingStart: "20260607T090000",
+                  players: [
+                    "1 Adrian Moksness 102-14007 Preikestolen Golfklubb 7,5 bestilt",
+                    "2 Andreas Aardal Hanssen 8-1558 Bærum Golfklubb 23,2 bestilt"
+                  ]
+                })}
+              </div>
+            </div>
+            <div class="card mb-4">
+              <div class="card-header"><h3>Mine turneringer</h3></div>
+              <div class="card-body">
+                ${webMineTiderCard({
+                  date: "lørdag 20.06.2026",
+                  time: "10:00",
+                  club: "Romerike GK",
+                  course: "Østlandstour 4",
+                  resourceGuid: "{TOURNAMENT-RESOURCE}",
+                  bookingStart: "20260620T100000",
+                  players: []
+                })}
+              </div>
+            </div>
+          </form>
+        `);
+      }
+
+      return new Response("", { status: 404 });
+    },
+    async () => {
+      const client = new OfficialGolfBoxClient({
+        apiBaseUrl: "https://example.test/",
+        webBaseUrl: "https://web.example.test/",
+        allowUntrustedGolfBoxUrls: true,
+        username: "member@example.com",
+        password: "secret",
+        country: "NO"
+      });
+
+      const teeTimes = await client.listUpcomingTeeTimes({ fromDate: "2026-06-05", daysAhead: 21 });
+
+      assert.deepEqual(teeTimes.map((teeTime) => teeTime.startsAt), [
+        "2026-06-06T08:03:00+02:00",
+        "2026-06-07T09:00:00+02:00"
+      ]);
+      assert.deepEqual(teeTimes[0], {
+        slotId: "884D570B-7F66-4ECD-88E2-215E3B386422|20260606T080300|member-club-guid",
+        startsAt: "2026-06-06T08:03:00+02:00",
+        clubName: "Onsøy Golfklubb",
+        courseName: "18 hulls banen",
+        status: "confirmed",
+        playerCount: 2,
+        players: [
+          { name: "Christoffer Jahren", memberNumber: "20-11297", clubName: "Onsøy Golfklubb", confirmed: true, isCurrentUser: true },
+          { name: "Stian Knudsen", memberNumber: "20-11218", clubName: "Onsøy Golfklubb", confirmed: true }
+        ],
+        source: "webPortal",
+        summary: "18 hulls banen: 2026-06-06T08:03:00+02:00 for 2 players."
+      });
+      assert.equal(teeTimes.some((teeTime) => teeTime.courseName === "Østlandstour 4"), false);
+    }
+  );
+});
+
+test("official client reports web portal fallback failure for empty UseNewApp lookups", async () => {
+  await withMockFetch(
+    (url, init, _headers, body) => {
+      if (url.pathname === "/authentication") {
+        return textResponse("upcoming-token");
+      }
+
+      if (url.pathname === "/profile/member") {
+        return jsonResponse({
+          Guid: "user-guid",
+          FullName: "Christoffer Jahren",
+          ClubGuid: "member-club-guid",
+          MemberNumber: "20-11297",
+          HasAccessToBooking: true,
+          UseNewApp: true
+        });
+      }
+
+      if (url.pathname === "/teeTime/booking" && url.searchParams.get("methodName") === "teeTimesForPlayer") {
+        return jsonResponse([]);
+      }
+
+      if (url.pathname === "/appLogic" && url.searchParams.get("methodName") === "validateClientv3") {
+        return jsonResponse({
+          ClientIsValid: true,
+          FrontPageURL: "http://www.golfbox.no//external/internationalLogin/receiveSSO.asp?token=(tokenGuid)"
+        });
+      }
+
+      if (url.hostname === "be.glfr.com" && url.pathname === "/graphql") {
+        const payload = JSON.parse(body ?? "{}") as { query?: string };
+        if (payload.query?.includes("initGolfboxOauth")) {
+          return jsonResponse({ data: { initGolfboxOauth: "https://auth.golfbox.io/connect/authorize?client_id=GLFR_no" } });
+        }
+        if (payload.query?.includes("continueWithAuth")) {
+          return jsonResponse({ data: { continueWithAuth: { id: "gimmie-user", otp: "gimmie-otp" } } });
+        }
+        if (payload.query?.includes("authMe")) {
+          return jsonResponse({ data: { AuthQueries: { authMe: { token: "gimmie-token" } } } });
+        }
+        if (payload.query?.includes("teeTimesWithProviders")) {
+          return jsonResponse({ data: { teeTimesWithProviders: [] } });
+        }
+      }
+
+      if (url.hostname === "auth.golfbox.io" && url.pathname === "/connect/authorize") {
+        return new Response("", {
+          status: 302,
+          headers: { Location: "https://auth.golfbox.io/Login?ReturnUrl=%2Fconnect%2Fauthorize%2Fcallback" }
+        });
+      }
+
+      if (url.hostname === "auth.golfbox.io" && url.pathname === "/Login" && init.method === "GET") {
+        return new Response(
+          '<form method="post"><input name="ReturnUrl" value="/connect/authorize/callback"><input name="__RequestVerificationToken" value="csrf"></form>',
+          { status: 200, headers: { "Content-Type": "text/html" } }
+        );
+      }
+
+      if (url.hostname === "auth.golfbox.io" && url.pathname === "/Login" && init.method === "POST") {
+        return new Response("", {
+          status: 302,
+          headers: { Location: "https://auth.golfbox.io/connect/authorize/callback?code=oauth-code" }
+        });
+      }
+
+      if (url.hostname === "auth.golfbox.io" && url.pathname === "/connect/authorize/callback") {
+        return new Response("", {
+          status: 302,
+          headers: { Location: "https://be.glfr.com/oauth/golfbox?code=oauth-code" }
+        });
+      }
+
+      if (url.hostname === "be.glfr.com" && url.pathname === "/oauth/golfbox") {
+        return new Response("", {
+          status: 303,
+          headers: { Location: "com.glfr.ngf://NGF/provider-token" }
+        });
+      }
+
+      if (url.hostname === "web.example.test" && url.pathname === "/site/system/redirect.asp") {
+        return new Response("", { status: 302, headers: { Location: "/login.asp" } });
+      }
+
+      if (url.hostname === "web.example.test" && url.pathname === "/login.asp" && init.method === "POST") {
+        return textResponse("<html>Logged in</html>");
+      }
+
+      if (url.hostname === "web.example.test" && url.pathname === "/site/ressources/booking/grid.asp") {
+        return textResponse("<html>Grid</html>");
+      }
+
+      if (url.hostname === "web.example.test" && url.pathname === "/site/my_golfbox/ressources/booking/grid.asp") {
+        return textResponse("<html>No my times link</html>");
+      }
+
+      return new Response("", { status: 404 });
+    },
+    async () => {
+      const client = new OfficialGolfBoxClient({
+        apiBaseUrl: "https://example.test/",
+        webBaseUrl: "https://web.example.test/",
+        allowUntrustedGolfBoxUrls: true,
+        username: "member@example.com",
+        password: "secret",
+        country: "NO"
+      });
+
+      await assert.rejects(
+        () => client.listUpcomingTeeTimes({ fromDate: "2026-06-05", daysAhead: 21 }),
+        /Web portal fallback failed: GolfBox web portal did not expose a Mine tider link/
+      );
+    }
+  );
+});
+
+test("official client uses a 90-day default upcoming window capped at 180 days", async () => {
+  async function listVisibleTimes(daysAhead?: number): Promise<string[]> {
+    let playerRequests = 0;
+    let visibleStartsAt: string[] = [];
+
+    await withMockFetch(
+      (url) => {
+        if (url.pathname === "/authentication") {
+          return textResponse("upcoming-token");
+        }
+
+        if (url.pathname === "/profile/member") {
+          return jsonResponse({
+            Guid: "user-guid",
+            ClubGuid: "member-club-guid",
+            MemberNumber: "20-11297",
+            HasAccessToBooking: true
+          });
+        }
+
+        if (url.pathname === "/teeTime/booking" && url.searchParams.get("methodName") === "teeTimesForPlayer") {
+          playerRequests += 1;
+          return jsonResponse([
+            {
+              clubGuid: "member-club-guid",
+              clubName: "Onsøy Golfklubb",
+              resourceGuid: "resource-1",
+              resourceName: "Hovedbanen",
+              teeTime: "20260829T090000",
+              players: [{ memberGuid: "user-guid" }]
+            },
+            {
+              clubGuid: "member-club-guid",
+              clubName: "Onsøy Golfklubb",
+              resourceGuid: "resource-2",
+              resourceName: "Hovedbanen",
+              teeTime: "20260905T090000",
+              players: [{ memberGuid: "user-guid" }]
+            },
+            {
+              clubGuid: "member-club-guid",
+              clubName: "Onsøy Golfklubb",
+              resourceGuid: "resource-3",
+              resourceName: "Hovedbanen",
+              teeTime: "20261201T090000",
+              players: [{ memberGuid: "user-guid" }]
+            }
+          ]);
+        }
+
+        return new Response("", { status: 404 });
+      },
+      async () => {
+        const client = new OfficialGolfBoxClient({
+          apiBaseUrl: "https://example.test/",
+          allowUntrustedGolfBoxUrls: true,
+          username: "member@example.com",
+          password: "secret",
+          country: "NO"
+        });
+
+        const teeTimes = await client.listUpcomingTeeTimes({ fromDate: "2026-06-01", daysAhead });
+        assert.equal(playerRequests, 1);
+        visibleStartsAt = teeTimes.map((teeTime) => teeTime.startsAt);
+      }
+    );
+
+    return visibleStartsAt;
+  }
+
+  assert.deepEqual(await listVisibleTimes(), ["2026-08-29T09:00:00+02:00"]);
+  assert.deepEqual(await listVisibleTimes(999), [
+    "2026-08-29T09:00:00+02:00",
+    "2026-09-05T09:00:00+02:00"
+  ]);
 });
 
 test("official client lists authenticated player tournaments", async () => {
@@ -664,6 +1667,62 @@ test("official client creates booking via try-edit and save", async () => {
         requests.filter((request) => new URL(request.url).searchParams.get("methodName") === "tryEditTeeTime")
           .length,
         1
+      );
+    }
+  );
+});
+
+test("official client refuses booking when listed future slot is not open in the portal yet", async () => {
+  const slotId = "resource-1|20260620T070000|member-club-guid";
+
+  await withMockFetch(
+    (url) => {
+      if (url.pathname === "/authentication") {
+        return textResponse("booking-token");
+      }
+
+      if (url.pathname === "/profile/member") {
+        return jsonResponse({
+          Guid: "user-guid",
+          ClubGuid: "member-club-guid",
+          HasAccessToBooking: true
+        });
+      }
+
+      if (url.pathname === "/teeTime/booking" && url.searchParams.get("methodName") === "teeTimesForDay") {
+        return xmlResponse(`
+          <root>
+            <Setup MaxNumberOfPlayers="4" Ressource_GUID="resource-1" Ressource_Name="Hovedbanen" />
+            <slot time="20260620T070000" portalClosed="0" touchClosed="0" isTooFarAheadPortal="1" isTooFarAheadTouch="1" isBlank="false" />
+          </root>
+        `);
+      }
+
+      if (url.pathname === "/teeTime/booking" && url.searchParams.get("methodName") === "tryEditTeeTime") {
+        throw new Error("tryEditTeeTime should not be called for portal-too-far-ahead slots.");
+      }
+
+      return new Response("", { status: 404 });
+    },
+    async () => {
+      const client = new OfficialGolfBoxClient({
+        apiBaseUrl: "https://example.test/",
+        allowUntrustedGolfBoxUrls: true,
+        username: "member@example.com",
+        password: "secret",
+        country: "NO"
+      });
+
+      await assert.rejects(
+        () =>
+          client.createBooking({
+            slotId,
+            players: [{ name: "Ada Lovelace" }],
+            confirmedByUser: true,
+            confirmationText: "Book this tee time",
+            idempotencyKey: "booking-key-future"
+          }),
+        /booking is not open yet/
       );
     }
   );

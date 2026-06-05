@@ -199,7 +199,7 @@ async function prepareMcpb() {
     version,
     description: "Local MCP tools for safe GolfBox tee-time and tournament lookup.",
     long_description:
-      "GolfBox MCP lets Claude Desktop authenticate with GolfBox, list known clubs, search tee times, list bookings, list tournaments, and prepare bookings. Booking and cancellation tools are disabled by default.",
+      "GolfBox MCP lets Claude Desktop authenticate with GolfBox, list known clubs, search tee times, list upcoming private tee times, list bookings, list tournaments, and prepare bookings. Booking and cancellation tools are disabled by default.",
     author: {
       name: "Christoffer Jahren"
     },
@@ -229,6 +229,7 @@ async function prepareMcpb() {
       { name: "golfbox_list_clubs", description: "List GolfBox clubs known by the adapter." },
       { name: "golfbox_search_tee_times", description: "Search available tee times for a club and date." },
       { name: "golfbox_list_bookings", description: "List tee-time bookings for the authenticated GolfBox user." },
+      { name: "golfbox_list_upcoming_tee_times", description: "List upcoming private tee times for the authenticated GolfBox user from teeTimesForPlayer, Gimmie GraphQL, or the read-only Mine tider web portal." },
       { name: "golfbox_list_tournaments", description: "List tournaments for the authenticated GolfBox user." },
       { name: "golfbox_prepare_booking", description: "Validate and summarize a booking without creating it." },
       { name: "golfbox_create_booking", description: "Create a booking only when write tools are explicitly enabled." },
@@ -314,6 +315,7 @@ async function prepareCodexPlugin() {
       defaultPrompt: [
         "Authenticate with GolfBox and list known clubs.",
         "Search GolfBox tee times without booking anything.",
+        "List upcoming private tee times for the authenticated user.",
         "Prepare a GolfBox booking summary only."
       ]
     }
@@ -344,10 +346,10 @@ async function prepareCodexPlugin() {
     [
       "---",
       "name: golfbox",
-      "description: Use GolfBox MCP to authenticate, list clubs, search tee times, list bookings, list tournaments, and prepare bookings safely.",
+      "description: Use GolfBox MCP to authenticate, list clubs, search tee times, list upcoming private tee times, list bookings, list tournaments, and prepare bookings safely.",
       "---",
       "",
-      "Use the bundled GolfBox MCP server for GolfBox tasks. Start with `golfbox_authenticate` when credentials are needed, then prefer read-only tools such as `golfbox_list_clubs`, `golfbox_search_tee_times`, `golfbox_list_bookings`, and `golfbox_list_tournaments`.",
+      "Use the bundled GolfBox MCP server for GolfBox tasks. Start with `golfbox_authenticate` when credentials are needed, then prefer read-only tools such as `golfbox_list_clubs`, `golfbox_search_tee_times`, `golfbox_list_upcoming_tee_times`, `golfbox_list_bookings`, and `golfbox_list_tournaments`. Use `golfbox_list_upcoming_tee_times` for the authenticated user's private future tee times across clubs; it uses GolfBox MobileHub first, then Gimmie GraphQL and the read-only Mine tider web portal for Norwegian UseNewApp accounts.",
       "",
       "Do not create or cancel bookings unless the user explicitly asks for that exact action and confirms write tools are enabled. Prefer `golfbox_prepare_booking` before any write action.",
       ""

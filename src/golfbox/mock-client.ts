@@ -9,7 +9,9 @@ import type {
   GolfBoxClient,
   TeeTimeSearch,
   TeeTimeSlot,
-  Tournament
+  Tournament,
+  UpcomingTeeTime,
+  UpcomingTeeTimeSearch
 } from "./types.js";
 
 const clubs: Club[] = [
@@ -124,6 +126,66 @@ export class MockGolfBoxClient implements GolfBoxClient {
 
   async listBookings(): Promise<Booking[]> {
     return [...this.bookings.values()];
+  }
+
+  async listUpcomingTeeTimes(search: UpcomingTeeTimeSearch = {}): Promise<UpcomingTeeTime[]> {
+    const fromDate = search.fromDate ?? "2026-06-01";
+    const daysAhead = search.daysAhead ?? 90;
+    const requestedClubIds = new Set(
+      [search.clubId, ...(search.clubIds ?? [])].filter((clubId): clubId is string => Boolean(clubId))
+    );
+    const until = new Date(`${fromDate}T00:00:00Z`);
+    until.setUTCDate(until.getUTCDate() + daysAhead);
+
+    const teeTimes = [
+      {
+        slotId: "mock-baerum-resource-1|20260607T090000|oslo-gk",
+        startsAt: "2026-06-07T09:00:00+02:00",
+        clubName: "Baerum Golfklubb",
+        courseName: "Baerum Golfbane 18 hull",
+        status: "confirmed",
+        playerCount: 4,
+        players: [
+          {
+            name: "Mock GolfBox User",
+            memberNumber: "000000",
+            clubName: "Oslo Golfklubb",
+            isCurrentUser: true,
+            confirmed: true
+          }
+        ],
+        source: "teeTimesForPlayer",
+        summary: "Baerum Golfbane 18 hull: 2026-06-07 09:00 for 4 players."
+      },
+      {
+        slotId: "mock-resource-1|20260607T092000|oslo-gk",
+        startsAt: "2026-06-07T09:20:00+02:00",
+        clubName: "Oslo Golfklubb",
+        courseName: "Mock Course",
+        status: "confirmed",
+        playerCount: 1,
+        players: [
+          {
+            name: "Mock GolfBox User",
+            memberNumber: "000000",
+            clubName: "Oslo Golfklubb",
+            isCurrentUser: true,
+            confirmed: true
+          }
+        ],
+        source: "teeTimesForPlayer",
+        summary: "Mock Course: 2026-06-07 09:20 for 1 player."
+      }
+    ] satisfies UpcomingTeeTime[];
+
+    return teeTimes.filter((teeTime) => {
+      const startsAtDate = teeTime.startsAt.slice(0, 10);
+      const matchesDateWindow = startsAtDate >= fromDate && new Date(`${startsAtDate}T00:00:00Z`) < until;
+      const matchesClub =
+        requestedClubIds.size === 0 ||
+        [...requestedClubIds].some((clubId) => teeTime.slotId.includes(clubId) || teeTime.clubName.includes(clubId));
+      return matchesDateWindow && matchesClub;
+    });
   }
 
   async listTournaments(): Promise<Tournament[]> {

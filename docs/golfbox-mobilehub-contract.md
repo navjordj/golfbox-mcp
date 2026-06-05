@@ -25,7 +25,7 @@ The app can also switch to a local development host, but only the live/test doma
 The app adds these headers to MobileHub calls:
 
 ```http
-Client-User-Agent: AppCountry:NO;AppUserCountryNO;AppLanguage:en;AppVersion:2.7.003;Model:<device>;OS:<android-version>;
+Client-User-Agent: AppCountry:DK;AppUserCountryNO;AppLanguage:en;AppVersion:2.7.003;Model:<device>;OS:<android-version>;
 Authorization: <token returned by authentication>
 Accept: application/json | application/xml | text/plain
 ```
@@ -77,7 +77,7 @@ All endpoints are relative to `https://app.golfbox.dk/`.
 | `GET` | `/teeTime/booking?methodName=teeTimesForDay&resourceGuid=<guid>&teeTime=<yyyymmdd>&memberclubguid=<guid>` | XML | Get the day grid for one course/resource. |
 | `POST` | `/teeTime/booking?methodName=tryEditTeeTime` | JSON | Lock/open a selected tee time before editing/booking. |
 | `POST` | `/teeTime/booking?methodName=editTeeTime` | JSON | Open an existing booked tee time for editing. |
-| `GET` | `/teeTime/booking?methodName=teeTimesForPlayer` | JSON | List the logged-in user's tee times. |
+| `GET` | `/teeTime/booking?methodName=teeTimesForPlayer` | JSON | List the logged-in user's tee times. This is the Android "Mine tider" call and is sent without date or club query parameters. |
 | `GET` | `/teeTime/booking?methodName=searchPlayerForTeeTime&sessionKey=<key>&searchInCountry=NO&name=<name>&memberNumber=<number>&club=<club>` | JSON | Search members to add to a booking session. |
 | `POST` | `/teeTime/booking?methodName=addPlayerToTeeTime` | JSON | Add a GolfBox member to a booking session. |
 | `POST` | `/teeTime/booking?methodName=addGuestPlayerToTeeTime` | JSON | Add a guest player to a booking session. |
@@ -280,11 +280,14 @@ MobileHub-Error: <message>
 - `OfficialGolfBoxClient` now uses `tryEditTeeTime` followed by `saveTeeTime` when write tools are explicitly enabled.
 - Tee-time search stores the booking resource from the day-grid XML `Setup.Ressource_GUID` in `slotId`, matching the Android client's `tryEditTeeTime` payload.
 - Tee times can be portal-open while `touchClosed=1` or `isTooFarAheadTouch=1`. Search keeps those slots visible, and create-booking uses the web portal `window.asp` form flow for the authenticated player instead of calling MobileHub `tryEditTeeTime`. A successful web form save that returns to the booking grid is treated as `confirmed`, even if `teeTimesForPlayer` lags behind.
+- GolfBox may list future slots with `isTooFarAheadPortal=1` before booking opens. Search keeps these visible with a note, but create-booking refuses them until GolfBox opens the portal window.
 - The first booked player is assumed to be the authenticated GolfBox user. Additional members require a `golfId`/member number so the adapter can resolve them with `searchPlayerForTeeTime`.
 - `saveTeeTime` is bounded by `GOLFBOX_SAVE_TEE_TIME_TIMEOUT_MS`, read as raw text, and reconciled with `teeTimesForPlayer` after the call.
 - The Android app loads `warningsForTeeTimeOnResource` before saving; the MCP mirrors this as a non-blocking advisory call.
 - If `tryEditTeeTime` returns `ResourceSettings` requiring advance internet payment that confirms the tee time, the MCP stops before `saveTeeTime` and releases the lock because payment automation is not implemented.
 - The MCP exposes `golfbox_list_bookings` for direct `teeTimesForPlayer` checks after ambiguous booking attempts.
+- The MCP exposes `golfbox_list_upcoming_tee_times` for upcoming private tee times. For old native GolfBox app accounts it uses `teeTimesForPlayer`; `clubId`/`clubIds` are filters on the returned tee times, not day-grid scan hints.
+- If `teeTimesForPlayer` is empty for a Norwegian `UseNewApp` user, `golfbox_list_upcoming_tee_times` authenticates with Gimmie through `initGolfboxOauth`, `continueWithAuth`, `AuthQueries.authMe`, and then queries `teeTimesWithProviders` with `x-auth-token`. If that authenticated Gimmie query is also empty, the tool logs in to the GolfBox web portal and parses the read-only `Mine tider` page. The MCP intentionally does not scan web day grids for upcoming private tee times.
 - Always call `deleteSession` or `deleteLock` when abandoning a booking flow.
 - Keep booking/cancellation behind explicit confirmation and an idempotency key.
 - Do not automate payment until the exact fee, cancellation policy, and payment consent are shown to the user.

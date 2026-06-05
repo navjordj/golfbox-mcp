@@ -10,7 +10,10 @@ import type {
   GolfBoxClient,
   TeeTimeSearch,
   TeeTimeSlot,
-  Tournament
+  Tournament,
+  UpcomingTeeTime,
+  UpcomingTeeTimePlayer,
+  UpcomingTeeTimeSearch
 } from "./types.js";
 import {
   fetchWithTimeout,
@@ -48,16 +51,79 @@ interface AuthToken {
 
 interface MobileHubUserResponse {
   Guid?: unknown;
+  guid?: unknown;
   FirstName?: unknown;
+  firstName?: unknown;
   LastName?: unknown;
+  lastName?: unknown;
   FullName?: unknown;
+  fullName?: unknown;
   Name?: unknown;
+  name?: unknown;
   ClubGuid?: unknown;
+  clubGuid?: unknown;
   ClubName?: unknown;
+  clubName?: unknown;
   MemberNumber?: unknown;
+  memberNumber?: unknown;
   CountryIsoCode?: unknown;
+  countryIsoCode?: unknown;
   HasAccessToBooking?: unknown;
+  hasAccessToBooking?: unknown;
   UseNewApp?: unknown;
+  useNewApp?: unknown;
+  NewAppSSOToken?: unknown;
+  newAppSSOToken?: unknown;
+}
+
+type AuthenticatedGolfBoxUser = AuthenticatedUser & {
+  newAppSsoToken?: string;
+};
+
+interface ValidateClientResponse {
+  FrontPageURL?: unknown;
+  frontPageURL?: unknown;
+  TeeTimeURL?: unknown;
+  teeTimeURL?: unknown;
+}
+
+interface GimmieGraphqlResponse<T> {
+  data?: T;
+  errors?: { message?: unknown }[];
+}
+
+interface GimmieContinueWithAuthResponse {
+  continueWithAuth?: {
+    id?: unknown;
+    otp?: unknown;
+  };
+}
+
+interface GimmieAuthMeResponse {
+  AuthQueries?: {
+    authMe?: {
+      token?: unknown;
+    };
+  };
+}
+
+interface GimmieTeeTimesResponse {
+  teeTimesWithProviders?: GimmieTeeTimeResponse[];
+}
+
+interface GimmieTeeTimeResponse {
+  bookingId?: unknown;
+  teeTime?: unknown;
+  clubName?: unknown;
+  guideName?: unknown;
+  org?: unknown;
+  confirmedSkeletonId?: unknown;
+  players?: GimmieTeeTimePlayerResponse[];
+}
+
+interface GimmieTeeTimePlayerResponse {
+  memberId?: unknown;
+  name?: unknown;
 }
 
 interface TeeClubResponse {
@@ -97,49 +163,94 @@ interface SlotDayGridDetail {
 
 interface TeeTimePlayerResponse {
   BookingGuid?: unknown;
+  bookingGuid?: unknown;
   BookingGroupGuid?: unknown;
+  bookingGroupGuid?: unknown;
   MemberGuid?: unknown;
+  memberGuid?: unknown;
   MemberNumber?: unknown;
+  memberNumber?: unknown;
   FirstName?: unknown;
+  firstName?: unknown;
   LastName?: unknown;
+  lastName?: unknown;
   FullName?: unknown;
+  fullName?: unknown;
   Name?: unknown;
+  name?: unknown;
   ClubGuid?: unknown;
+  clubGuid?: unknown;
   ClubName?: unknown;
+  clubName?: unknown;
   BookingIsPaid?: unknown;
+  bookingIsPaid?: unknown;
   Confirmable?: unknown;
+  confirmable?: unknown;
   Confirmed?: unknown;
+  confirmed?: unknown;
   IsEditable?: unknown;
+  isEditable?: unknown;
   Items?: unknown;
+  items?: unknown;
 }
 
 interface TeeTimeResourceSettingsResponse {
   HasInternetPayment?: unknown;
+  hasInternetPayment?: unknown;
   ForceInAdvancePayment?: unknown;
+  forceInAdvancePayment?: unknown;
   PaymentConfirmsTeeTime?: unknown;
+  paymentConfirmsTeeTime?: unknown;
+}
+
+interface WebUpcomingTeeTimeCard {
+  date: string;
+  timeOfDay: string;
+  clubName: string;
+  courseName: string;
+  resourceGuid: string;
+  bookingStart: string;
+  players: UpcomingTeeTimePlayer[];
 }
 
 interface TeeTimeBookingItemResponse {
   Price?: unknown;
+  price?: unknown;
   Paid?: unknown;
+  paid?: unknown;
 }
 
 interface TeeTimeResponse {
   BookingGuid?: unknown;
+  bookingGuid?: unknown;
   BookingGroupGuid?: unknown;
+  bookingGroupGuid?: unknown;
   ClubGuid?: unknown;
+  clubGuid?: unknown;
   ClubName?: unknown;
+  clubName?: unknown;
   ResourceGuid?: unknown;
+  resourceGuid?: unknown;
   ResourceName?: unknown;
+  resourceName?: unknown;
   TeeTime?: unknown;
+  teeTime?: unknown;
   SessionKey?: unknown;
+  sessionKey?: unknown;
   SessionGuid?: unknown;
+  sessionGuid?: unknown;
   LockGuid?: unknown;
+  lockGuid?: unknown;
   IsReadOnly?: unknown;
+  isReadOnly?: unknown;
   ReadOnlyReason?: unknown;
+  readOnlyReason?: unknown;
   ConfirmationWindowOpen?: unknown;
+  confirmationWindowOpen?: unknown;
   ResourceSettings?: unknown;
+  resourceSettings?: unknown;
   Players?: TeeTimePlayerResponse[];
+  players?: TeeTimePlayerResponse[];
 }
 
 interface TournamentPlayerResponse {
@@ -180,9 +291,11 @@ interface WebTextResponse {
 }
 
 export class OfficialGolfBoxClient implements GolfBoxClient {
+  private static readonly gimmieGraphqlUrl = "https://be.glfr.com/graphql";
   private readonly baseUrl: string;
   private readonly webBaseUrl: string;
   private readonly country: string;
+  private readonly appCountry: string;
   private readonly appLanguage: string;
   private readonly appVersion: string;
   private readonly clientUserAgent: string;
@@ -192,12 +305,14 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
   private readonly webRequestTimeoutMs: number;
   private readonly includeErrorBodySnippets: boolean;
   private cachedToken?: AuthToken;
-  private cachedUser?: AuthenticatedUser;
+  private cachedUser?: AuthenticatedGolfBoxUser;
   private readonly bookingsByIdempotencyKey = new Map<string, Promise<Booking>>();
   private readonly responseContexts = new WeakMap<Response, { method: string; path: string }>();
 
   constructor(private readonly options: OfficialGolfBoxClientOptions) {
     this.country = (options.country ?? "NO").toUpperCase();
+    // The Android app package is Danish; the logged-in user's country stays in AppUserCountry.
+    this.appCountry = "DK";
     this.baseUrl = validateGolfBoxBaseUrl(
       options.apiBaseUrl ?? "https://app.golfbox.dk/",
       "api",
@@ -216,7 +331,7 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
     this.webRequestTimeoutMs = options.webRequestTimeoutMs ?? 15_000;
     this.includeErrorBodySnippets = options.includeErrorBodySnippets ?? false;
     this.clientUserAgent =
-      `AppCountry:${this.country};` +
+      `AppCountry:${this.appCountry};` +
       `AppUserCountry${this.country};` +
       `AppLanguage:${this.appLanguage};` +
       `AppVersion:${this.appVersion};` +
@@ -322,6 +437,56 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
     return teeTimes
       .map((teeTime) => mapBookingListItem(teeTime, user))
       .filter((booking): booking is Booking => booking !== undefined);
+  }
+
+  async listUpcomingTeeTimes(search: UpcomingTeeTimeSearch = {}): Promise<UpcomingTeeTime[]> {
+    const user = await this.getAuthenticatedUser();
+    if (user.hasAccessToBooking === false) {
+      throw new Error("Authenticated GolfBox user does not have booking access.");
+    }
+
+    const fromDate = search.fromDate ?? todayNorwayDate();
+    const daysAhead = normalizeDaysAhead(search.daysAhead);
+    const untilDate = addDays(fromDate, daysAhead);
+    const clubFilters = upcomingClubFilters(search);
+
+    const upcoming = (await this.listPlayerTeeTimes())
+      .map((teeTime) => mapUpcomingTeeTimeFromPlayerResponse(teeTime, user, fromDate, untilDate, clubFilters))
+      .filter((teeTime): teeTime is UpcomingTeeTime => teeTime !== undefined)
+      .sort(compareUpcomingTeeTimes);
+
+    if (upcoming.length === 0 && user.useNewApp === true) {
+      const routeHint = await this.readNewAppRouteHint();
+      const gimmieUpcoming = await this.listGimmieUpcomingTeeTimes(user, fromDate, untilDate).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(buildEmptyUseNewAppTeeTimesError(routeHint, `Gimmie/new-app lookup failed: ${message}`));
+      });
+      if (gimmieUpcoming.length > 0) {
+        return gimmieUpcoming.sort(compareUpcomingTeeTimes);
+      }
+
+      const webUpcoming = await this.listWebPortalUpcomingTeeTimes(user, fromDate, untilDate).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          buildEmptyUseNewAppTeeTimesError(
+            routeHint,
+            `Gimmie teeTimesWithProviders was authenticated but returned an empty list. Web portal fallback failed: ${message}`
+          )
+        );
+      });
+      if (webUpcoming.length > 0) {
+        return webUpcoming.sort(compareUpcomingTeeTimes);
+      }
+
+      throw new Error(
+        buildEmptyUseNewAppTeeTimesError(
+          routeHint,
+          "Gimmie teeTimesWithProviders was authenticated but returned an empty list, and the web portal Mine tider fallback returned no upcoming tee times."
+        )
+      );
+    }
+
+    return upcoming;
   }
 
   async listTournaments(): Promise<Tournament[]> {
@@ -462,6 +627,12 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
       };
     }
 
+    if (slotDetail && isTruthy(readAttr(slotDetail.attrs, "isTooFarAheadPortal"))) {
+      throw new Error(
+        `GolfBox lists this tee time at ${formatGolfBoxDateTime(slot.teeTime)}, but booking is not open yet. Try again closer to the start date.`
+      );
+    }
+
     if (slotDetail && shouldUseWebPortalBooking(slotDetail.attrs)) {
       return this.createBookingViaWebPortal(slot, effectiveRequest, slotDetail);
     }
@@ -490,8 +661,8 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
 
     let saveWasAttempted = false;
     try {
-      if (toOptionalBoolean(session.IsReadOnly)) {
-        const reason = toOptionalString(session.ReadOnlyReason) ?? "no reason supplied";
+      if (toOptionalBoolean(session.IsReadOnly ?? session.isReadOnly)) {
+        const reason = toOptionalString(session.ReadOnlyReason ?? session.readOnlyReason) ?? "no reason supplied";
         throw new Error(`GolfBox opened this tee time as read-only: ${reason}`);
       }
 
@@ -1000,7 +1171,7 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
     return token;
   }
 
-  private async loginWithToken(token: string): Promise<AuthenticatedUser> {
+  private async loginWithToken(token: string): Promise<AuthenticatedGolfBoxUser> {
     const response = await this.jsonRequest<MobileHubUserResponse>(
       `/profile/member?methodName=login&country=${encodeURIComponent(this.country)}`,
       {
@@ -1016,12 +1187,266 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
     return this.cachedUser;
   }
 
-  private async getAuthenticatedUser(): Promise<AuthenticatedUser> {
+  private async getAuthenticatedUser(): Promise<AuthenticatedGolfBoxUser> {
     if (this.cachedUser) {
       return this.cachedUser;
     }
 
-    return (await this.authenticate()).user ?? {};
+    await this.authenticate();
+    return this.cachedUser ?? {};
+  }
+
+  private async readNewAppRouteHint(): Promise<string | undefined> {
+    try {
+      const response = await this.authorizedJsonRequest<ValidateClientResponse>(
+        `/appLogic?methodName=validateClientv3&country=${encodeURIComponent(this.country)}`,
+        {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            OS: "Android",
+            OSVersion: "14",
+            AppVersion: this.appVersion
+          })
+        }
+      );
+
+      const frontPageUrl = toOptionalString(response.FrontPageURL ?? response.frontPageURL);
+      if (!frontPageUrl) {
+        return undefined;
+      }
+
+      if (/golfbox\.no/i.test(frontPageUrl)) {
+        return "GolfBox validateClientv3 routes Norwegian useNewApp accounts through the Gimmie replacement flow.";
+      }
+
+      return `GolfBox validateClientv3 returned a new-app route on ${redactSensitiveText(frontPageUrl)}.`;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async listGimmieUpcomingTeeTimes(
+    user: AuthenticatedGolfBoxUser,
+    fromDate: string,
+    untilDate: string
+  ): Promise<UpcomingTeeTime[]> {
+    if (!this.hasCredentials()) {
+      throw new Error(
+        buildEmptyUseNewAppTeeTimesError(
+          undefined,
+          "Gimmie/new-app lookup needs GolfBox username/password because a MobileHub API token cannot complete the GolfBox OAuth flow."
+        )
+      );
+    }
+
+    const token = await this.authenticateWithGimmie();
+    const response = await this.gimmieGraphql<GimmieTeeTimesResponse>(
+      {
+        query:
+          "query NextTeeTime { teeTimesWithProviders { bookingId teeTime clubName guideName org confirmedSkeletonId players { memberId name } } }"
+      },
+      { "x-auth-token": token }
+    );
+
+    const teeTimes = Array.isArray(response.teeTimesWithProviders) ? response.teeTimesWithProviders : [];
+    return teeTimes
+      .map((teeTime) => mapUpcomingTeeTimeFromGimmie(teeTime, user, fromDate, untilDate))
+      .filter((teeTime): teeTime is UpcomingTeeTime => teeTime !== undefined);
+  }
+
+  private async listWebPortalUpcomingTeeTimes(
+    user: AuthenticatedGolfBoxUser,
+    fromDate: string,
+    untilDate: string
+  ): Promise<UpcomingTeeTime[]> {
+    if (!this.hasCredentials()) {
+      throw new Error("GolfBox username/password is required for web portal Mine tider lookup.");
+    }
+
+    const session = await this.createWebSession();
+    const gridPage = await this.webTextRequest(session, "/site/my_golfbox/ressources/booking/grid.asp", {
+      method: "GET",
+      headers: {
+        Accept: "text/html"
+      }
+    });
+    const myTimesPath = findWebMyTimesPath(gridPage.text);
+    if (!myTimesPath) {
+      throw new Error("GolfBox web portal did not expose a Mine tider link.");
+    }
+
+    const myTimesPage = await this.webTextRequest(session, myTimesPath, {
+      method: "GET",
+      headers: {
+        Accept: "text/html"
+      }
+    });
+
+    return parseWebUpcomingTeeTimes(myTimesPage.text, user, fromDate, untilDate);
+  }
+
+  private async authenticateWithGimmie(): Promise<string> {
+    const username = this.options.username?.trim();
+    const password = this.options.password?.trim();
+    if (!username || !password) {
+      throw new Error("GolfBox username/password is required for Gimmie authentication.");
+    }
+
+    const cookies = new Map<string, Map<string, string>>();
+    const init = await this.gimmieGraphql<{ initGolfboxOauth?: unknown }>({
+      query:
+        "mutation initGolfboxAuthMutation($union: GBUnion!, $returnTo: String!) { initGolfboxOauth(union: $union, returnTo: $returnTo) }",
+      variables: { union: "NGF", returnTo: "com.glfr.ngf://" }
+    });
+    const authorizeUrl = toOptionalString(init.initGolfboxOauth);
+    if (!authorizeUrl) {
+      throw new Error("Gimmie did not return a GolfBox OAuth URL.");
+    }
+
+    let response = await this.externalRequest(authorizeUrl, { method: "GET", headers: { Accept: "text/html,*/*" } }, cookies);
+    let location = response.headers.get("location");
+    if (!isRedirect(response) || !location) {
+      throw new Error(`Gimmie GolfBox OAuth did not redirect to login (${response.status}).`);
+    }
+
+    const loginUrl = new URL(location, authorizeUrl).href;
+    response = await this.externalRequest(loginUrl, { method: "GET", headers: { Accept: "text/html,*/*" } }, cookies);
+    const loginHtml = await response.text();
+    const antiForgeryToken = decodeHtmlAttribute(
+      loginHtml.match(/name="__RequestVerificationToken"[^>]*value="([^"]+)"/)?.[1]
+    );
+    const returnUrl = decodeHtmlAttribute(loginHtml.match(/name="ReturnUrl"[^>]*value="([^"]*)"/)?.[1]);
+    if (!antiForgeryToken || !returnUrl) {
+      throw new Error("GolfBox OAuth login form did not include expected anti-forgery fields.");
+    }
+
+    response = await this.externalRequest(
+      loginUrl,
+      {
+        method: "POST",
+        headers: {
+          Accept: "text/html,*/*",
+          "Content-Type": "application/x-www-form-urlencoded",
+          Origin: new URL(loginUrl).origin,
+          Referer: loginUrl
+        },
+        body: new URLSearchParams({
+          ReturnUrl: returnUrl,
+          username,
+          password,
+          __RequestVerificationToken: antiForgeryToken
+        })
+      },
+      cookies
+    );
+    location = response.headers.get("location");
+    if (!isRedirect(response) || !location) {
+      throw new Error(`GolfBox OAuth login did not redirect (${response.status}).`);
+    }
+
+    response = await this.externalRequest(new URL(location, loginUrl).href, { method: "GET", headers: { Accept: "text/html,*/*" } }, cookies);
+    location = response.headers.get("location");
+    if (!isRedirect(response) || !location) {
+      throw new Error(`GolfBox OAuth callback did not redirect (${response.status}).`);
+    }
+
+    response = await this.externalRequest(location, { method: "GET", headers: { Accept: "text/html,*/*" } }, cookies);
+    location = response.headers.get("location");
+    if (!isRedirect(response) || !location?.startsWith("com.glfr.ngf://")) {
+      throw new Error(`Gimmie OAuth did not return the expected app redirect (${response.status}).`);
+    }
+
+    const deepLink = new URL(location);
+    const providerToken = deepLink.pathname.split("/").filter(Boolean)[0] || deepLink.hostname;
+    const continued = await this.gimmieGraphql<GimmieContinueWithAuthResponse>({
+      query:
+        "mutation continueWithGolfbox($token: ID!, $provider: AuthProvider!) { continueWithAuth(input: { provider: $provider, token: $token }) { id otp } }",
+      variables: { token: providerToken, provider: "NGF" }
+    });
+    const gimmieUserId = toOptionalString(continued.continueWithAuth?.id);
+    const otp = toOptionalString(continued.continueWithAuth?.otp);
+    if (!gimmieUserId || !otp) {
+      throw new Error("Gimmie continueWithAuth did not return a user id and OTP.");
+    }
+
+    const auth = await this.gimmieGraphql<GimmieAuthMeResponse>({
+      query: "query Query($input: AuthMeInput!) { AuthQueries { authMe(input: $input) { token } } }",
+      variables: { input: { username: gimmieUserId, password: otp, provider: "NGF" } }
+    });
+    const token = toOptionalString(auth.AuthQueries?.authMe?.token);
+    if (!token) {
+      throw new Error("Gimmie authMe did not return an access token.");
+    }
+
+    return token;
+  }
+
+  private async gimmieGraphql<T>(body: unknown, headers: Record<string, string> = {}): Promise<T> {
+    const response = await this.externalRequest(OfficialGolfBoxClient.gimmieGraphqlUrl, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        ...headers
+      },
+      body: JSON.stringify(body)
+    });
+    const text = await response.text();
+    let parsed: GimmieGraphqlResponse<T>;
+    try {
+      parsed = JSON.parse(text) as GimmieGraphqlResponse<T>;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Gimmie returned invalid JSON: ${message}`);
+    }
+
+    if (!response.ok || parsed.errors?.length) {
+      const message = parsed.errors?.map((item) => toOptionalString(item.message)).filter(Boolean).join("; ");
+      throw new Error(`Gimmie GraphQL request failed (${response.status})${message ? `: ${message}` : ""}.`);
+    }
+
+    if (!parsed.data) {
+      throw new Error("Gimmie GraphQL response did not include data.");
+    }
+
+    return parsed.data;
+  }
+
+  private async externalRequest(
+    url: string,
+    init: RequestInit,
+    cookies?: Map<string, Map<string, string>>
+  ): Promise<Response> {
+    const headers = new Headers(init.headers);
+    if (cookies) {
+      const cookie = readCookieHeader(cookies, url);
+      if (cookie) {
+        headers.set("Cookie", cookie);
+      }
+    }
+
+    const { response, timedOut } = await fetchWithTimeout(
+      new URL(url),
+      {
+        ...init,
+        redirect: "manual",
+        headers
+      },
+      this.requestTimeoutMs
+    );
+    if (timedOut) {
+      throw new GolfBoxRequestTimeoutError(this.requestTimeoutMs, url);
+    }
+
+    if (cookies) {
+      storeResponseCookies(cookies, url, response);
+    }
+
+    return response;
   }
 
   private async listResourcesForClub(clubGuid: string): Promise<TeeResource[]> {
@@ -1309,6 +1734,8 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
       warnings.push("Authenticated user does not have GolfBox booking access according to profile/member login.");
     }
 
+    const { newAppSsoToken: _newAppSsoToken, ...safeUser } = user as AuthenticatedGolfBoxUser;
+
     return {
       provider: "official",
       baseUrl: this.baseUrl,
@@ -1318,7 +1745,7 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
       tokenPreview: redactToken(authToken.token),
       tokenLength: authToken.token.length,
       validatedWithLogin: true,
-      user,
+      user: safeUser,
       warnings
     };
   }
@@ -1390,29 +1817,146 @@ function slotIdFromSlot(slot: SlotKey): string {
 }
 
 function golfBoxDateTimeToIsoDate(teeTime: string): string {
+  const normalized = normalizeGolfBoxDateTime(teeTime);
+  if (normalized) {
+    return `${normalized.slice(0, 4)}-${normalized.slice(4, 6)}-${normalized.slice(6, 8)}`;
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}/.test(teeTime)) {
+    return teeTime.slice(0, 10);
+  }
+
   return `${teeTime.slice(0, 4)}-${teeTime.slice(4, 6)}-${teeTime.slice(6, 8)}`;
 }
 
 function golfBoxDateTimeToTimeOfDay(teeTime: string): string {
+  const normalized = normalizeGolfBoxDateTime(teeTime);
+  if (normalized) {
+    return `${normalized.slice(9, 11)}:${normalized.slice(11, 13)}`;
+  }
+
+  const isoTime = teeTime.match(/T(\d{2}):(\d{2})/);
+  if (isoTime) {
+    return `${isoTime[1]}:${isoTime[2]}`;
+  }
+
   return `${teeTime.slice(9, 11)}:${teeTime.slice(11, 13)}`;
 }
 
 function formatGolfBoxDateTime(teeTime: string): string {
-  if (!/^\d{8}T\d{6}$/.test(teeTime)) {
+  if (!normalizeGolfBoxDateTime(teeTime) && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(teeTime)) {
     return teeTime;
   }
 
   return `${golfBoxDateTimeToIsoDate(teeTime)} ${golfBoxDateTimeToTimeOfDay(teeTime)}`;
 }
 
-function golfBoxDateTimeToIso(value: unknown): string | undefined {
-  const text = toOptionalString(value);
-  if (!text || !/^\d{8}T\d{6}$/.test(text)) {
+function normalizeGolfBoxDateTime(value: string | undefined): string | undefined {
+  const text = value?.trim();
+  if (!text) {
     return undefined;
   }
 
-  const date = golfBoxDateTimeToIsoDate(text);
-  return toNorwayLocalIso(date, golfBoxDateTimeToTimeOfDay(text));
+  const compact = text.match(/^(\d{8})T(\d{6})$/);
+  if (compact) {
+    return `${compact[1]}T${compact[2]}`;
+  }
+
+  const isoLike = text.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (isoLike) {
+    return `${isoLike[1]}${isoLike[2]}${isoLike[3]}T${isoLike[4]}${isoLike[5]}${isoLike[6] ?? "00"}`;
+  }
+
+  const microsoftDate = text.match(/\/Date\((\d+)(?:[+-]\d+)?\)\//);
+  if (microsoftDate) {
+    const timestamp = Number.parseInt(microsoftDate[1], 10);
+    if (Number.isFinite(timestamp)) {
+      return formatDateTimeInNorway(new Date(timestamp));
+    }
+  }
+
+  return undefined;
+}
+
+function formatDateTimeInNorway(date: Date): string {
+  const parts = new Intl.DateTimeFormat("en", {
+    timeZone: "Europe/Oslo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).formatToParts(date);
+  const values = new Map(parts.map((part) => [part.type, part.value]));
+  return `${values.get("year")}${values.get("month")}${values.get("day")}T${values.get("hour")}${values.get("minute")}${values.get("second")}`;
+}
+
+function todayNorwayDate(): string {
+  const parts = new Intl.DateTimeFormat("en", {
+    timeZone: "Europe/Oslo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(new Date());
+  const values = new Map(parts.map((part) => [part.type, part.value]));
+  return `${values.get("year")}-${values.get("month")}-${values.get("day")}`;
+}
+
+function normalizeDaysAhead(daysAhead: number | undefined): number {
+  if (daysAhead === undefined) {
+    return 90;
+  }
+
+  return Math.min(Math.max(daysAhead, 1), 180);
+}
+
+function addDays(fromDate: string, days: number): string {
+  const [year, month, day] = fromDate.split("-").map((part) => Number.parseInt(part, 10));
+  const start = Date.UTC(year, month - 1, day);
+  return new Date(start + days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+function isoDatePart(value: string): string | undefined {
+  const isoDate = value.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (isoDate) {
+    return isoDate[1];
+  }
+
+  const normalized = normalizeGolfBoxDateTime(value);
+  return normalized ? golfBoxDateTimeToIsoDate(normalized) : undefined;
+}
+
+function normalizeIsoDateTime(value: string): string | undefined {
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value)) {
+    return value;
+  }
+
+  return golfBoxDateTimeToIso(value);
+}
+
+function compareUpcomingTeeTimes(left: UpcomingTeeTime, right: UpcomingTeeTime): number {
+  return left.startsAt.localeCompare(right.startsAt);
+}
+
+function upcomingClubFilters(search: Pick<UpcomingTeeTimeSearch, "clubId" | "clubIds">): Set<string> {
+  return new Set(
+    [search.clubId, ...(search.clubIds ?? [])]
+      .map((clubId) => normalizeGuid(clubId))
+      .filter((clubId) => clubId !== "")
+  );
+}
+
+function golfBoxDateTimeToIso(value: unknown): string | undefined {
+  const text = toOptionalString(value);
+  const normalized = normalizeGolfBoxDateTime(text);
+  if (!normalized) {
+    return undefined;
+  }
+
+  const date = golfBoxDateTimeToIsoDate(normalized);
+  return toNorwayLocalIso(date, golfBoxDateTimeToTimeOfDay(normalized));
 }
 
 function parseTeeTimeResponse(value: unknown): TeeTimeResponse {
@@ -1425,16 +1969,26 @@ function parseTeeTimeResponse(value: unknown): TeeTimeResponse {
 }
 
 function readSessionKey(response: TeeTimeResponse): string | undefined {
-  return toOptionalString(response.SessionKey ?? response.SessionGuid ?? response.LockGuid);
+  return toOptionalString(
+    response.SessionKey ??
+      response.sessionKey ??
+      response.SessionGuid ??
+      response.sessionGuid ??
+      response.LockGuid ??
+      response.lockGuid
+  );
 }
 
 function ensureBookingCanBeSavedWithoutPayment(response: TeeTimeResponse): void {
-  const resourceSettings = isRecord(response.ResourceSettings)
-    ? (response.ResourceSettings as TeeTimeResourceSettingsResponse)
+  const resourceSettingsValue = response.ResourceSettings ?? response.resourceSettings;
+  const resourceSettings = isRecord(resourceSettingsValue)
+    ? (resourceSettingsValue as TeeTimeResourceSettingsResponse)
     : undefined;
-  const hasInternetPayment = toOptionalBoolean(resourceSettings?.HasInternetPayment) === true;
-  const forceInAdvancePayment = toOptionalBoolean(resourceSettings?.ForceInAdvancePayment) === true;
-  const paymentConfirmsTeeTime = toOptionalBoolean(resourceSettings?.PaymentConfirmsTeeTime) === true;
+  const hasInternetPayment = toOptionalBoolean(resourceSettings?.HasInternetPayment ?? resourceSettings?.hasInternetPayment) === true;
+  const forceInAdvancePayment =
+    toOptionalBoolean(resourceSettings?.ForceInAdvancePayment ?? resourceSettings?.forceInAdvancePayment) === true;
+  const paymentConfirmsTeeTime =
+    toOptionalBoolean(resourceSettings?.PaymentConfirmsTeeTime ?? resourceSettings?.paymentConfirmsTeeTime) === true;
 
   if (hasInternetPayment && forceInAdvancePayment && paymentConfirmsTeeTime && teeTimeHasUnpaidItems(response)) {
     throw new Error(
@@ -1444,24 +1998,24 @@ function ensureBookingCanBeSavedWithoutPayment(response: TeeTimeResponse): void 
 }
 
 function teeTimeHasUnpaidItems(response: TeeTimeResponse): boolean {
-  const players = Array.isArray(response.Players) ? response.Players : [];
+  const players = readTeeTimePlayers(response);
   return players.some((player) => {
-    if (toOptionalBoolean(player.BookingIsPaid) === true) {
+    if (toOptionalBoolean(player.BookingIsPaid ?? player.bookingIsPaid) === true) {
       return false;
     }
 
-    const items = Array.isArray(player.Items) ? player.Items : [];
+    const items = Array.isArray(player.Items) ? player.Items : Array.isArray(player.items) ? player.items : [];
     return items.some((item) => {
       if (!isRecord(item)) {
         return false;
       }
 
       const bookingItem = item as TeeTimeBookingItemResponse;
-      if (toOptionalBoolean(bookingItem.Paid) === true) {
+      if (toOptionalBoolean(bookingItem.Paid ?? bookingItem.paid) === true) {
         return false;
       }
 
-      return readMoney(bookingItem.Price) > 0;
+      return readMoney(bookingItem.Price ?? bookingItem.price) > 0;
     });
   });
 }
@@ -1477,20 +2031,69 @@ function readMoney(value: unknown): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function readTeeTimePlayers(response: TeeTimeResponse): TeeTimePlayerResponse[] {
+  return Array.isArray(response.Players) ? response.Players : Array.isArray(response.players) ? response.players : [];
+}
+
+function readTeeTimeBookingReference(response: TeeTimeResponse): string | undefined {
+  return toOptionalString(response.BookingGroupGuid ?? response.bookingGroupGuid ?? response.BookingGuid ?? response.bookingGuid);
+}
+
+function readPlayerBookingReference(player: TeeTimePlayerResponse): string | undefined {
+  return toOptionalString(player.BookingGroupGuid ?? player.bookingGroupGuid ?? player.BookingGuid ?? player.bookingGuid);
+}
+
+function readTeeTimeClubGuid(response: TeeTimeResponse): string | undefined {
+  return toOptionalString(response.ClubGuid ?? response.clubGuid);
+}
+
+function readTeeTimeClubName(response: TeeTimeResponse): string | undefined {
+  return toOptionalString(response.ClubName ?? response.clubName);
+}
+
+function readTeeTimeResourceGuid(response: TeeTimeResponse): string | undefined {
+  return toOptionalString(response.ResourceGuid ?? response.resourceGuid);
+}
+
+function readTeeTimeResourceName(response: TeeTimeResponse): string | undefined {
+  return toOptionalString(response.ResourceName ?? response.resourceName);
+}
+
+function readTeeTimeValue(response: TeeTimeResponse): string | undefined {
+  return toOptionalString(response.TeeTime ?? response.teeTime);
+}
+
+function readPlayerMemberGuid(player: TeeTimePlayerResponse): string | undefined {
+  return toOptionalString(player.MemberGuid ?? player.memberGuid);
+}
+
+function readPlayerMemberNumber(player: TeeTimePlayerResponse): string | undefined {
+  return toOptionalString(player.MemberNumber ?? player.memberNumber);
+}
+
+function readPlayerClubName(player: TeeTimePlayerResponse): string | undefined {
+  return toOptionalString(player.ClubName ?? player.clubName);
+}
+
+function readPlayerConfirmed(player: TeeTimePlayerResponse): boolean | undefined {
+  return toOptionalBoolean(player.Confirmed ?? player.confirmed);
+}
+
+function readPlayerConfirmable(player: TeeTimePlayerResponse): boolean | undefined {
+  return toOptionalBoolean(player.Confirmable ?? player.confirmable);
+}
+
 function mapBookingFromTeeTime(
   response: TeeTimeResponse,
   request: CreateBookingRequest,
   slot: SlotKey,
   prefix?: string
 ): Booking {
-  const players = Array.isArray(response.Players) ? response.Players : [];
+  const players = readTeeTimePlayers(response);
   const golfBoxReference =
-    toOptionalString(response.BookingGroupGuid ?? response.BookingGuid) ??
-    players
-      .map((player) => toOptionalString(player.BookingGroupGuid ?? player.BookingGuid))
-      .find((reference) => reference !== undefined);
+    readTeeTimeBookingReference(response) ?? players.map(readPlayerBookingReference).find((reference) => reference !== undefined);
   const needsConfirmation = players.some(
-    (player) => toOptionalBoolean(player.Confirmable) === true && toOptionalBoolean(player.Confirmed) === false
+    (player) => readPlayerConfirmable(player) === true && readPlayerConfirmed(player) === false
   );
   const playerText = `${request.players.length} player${request.players.length === 1 ? "" : "s"}`;
   const prefixNote = prefix ? `${prefix} ` : "";
@@ -1545,24 +2148,21 @@ function mapPendingWebPortalSubmission(request: CreateBookingRequest, slot: Slot
 }
 
 function mapBookingListItem(response: TeeTimeResponse, user: AuthenticatedUser): Booking | undefined {
-  const resourceGuid = toOptionalString(response.ResourceGuid);
-  const teeTime = toOptionalString(response.TeeTime);
-  const memberClubGuid = user.clubGuid ?? toOptionalString(response.ClubGuid);
+  const resourceGuid = readTeeTimeResourceGuid(response);
+  const teeTime = normalizeGolfBoxDateTime(readTeeTimeValue(response)) ?? readTeeTimeValue(response);
+  const memberClubGuid = user.clubGuid ?? readTeeTimeClubGuid(response);
   if (!resourceGuid || !teeTime || !memberClubGuid) {
     return undefined;
   }
 
   const slotId = `${stripGuidBraces(resourceGuid)}|${teeTime}|${stripGuidBraces(memberClubGuid)}`;
-  const players = Array.isArray(response.Players) ? response.Players : [];
+  const players = readTeeTimePlayers(response);
   const needsConfirmation = players.some(
-    (player) => toOptionalBoolean(player.Confirmable) === true && toOptionalBoolean(player.Confirmed) === false
+    (player) => readPlayerConfirmable(player) === true && readPlayerConfirmed(player) === false
   );
   const golfBoxReference =
-    toOptionalString(response.BookingGroupGuid ?? response.BookingGuid) ??
-    players
-      .map((player) => toOptionalString(player.BookingGroupGuid ?? player.BookingGuid))
-      .find((reference) => reference !== undefined);
-  const courseName = toOptionalString(response.ResourceName) ?? "GolfBox";
+    readTeeTimeBookingReference(response) ?? players.map(readPlayerBookingReference).find((reference) => reference !== undefined);
+  const courseName = readTeeTimeResourceName(response) ?? "GolfBox";
   const playerText =
     players.length > 0 ? `${players.length} player${players.length === 1 ? "" : "s"}` : "unknown player count";
   const referenceNote = golfBoxReference ? ` GolfBox reference: ${golfBoxReference}.` : "";
@@ -1575,17 +2175,190 @@ function mapBookingListItem(response: TeeTimeResponse, user: AuthenticatedUser):
   };
 }
 
+function mapUpcomingTeeTimeFromPlayerResponse(
+  response: TeeTimeResponse,
+  user: AuthenticatedUser,
+  fromDate: string,
+  untilDate: string,
+  clubFilters: Set<string>
+): UpcomingTeeTime | undefined {
+  const resourceGuid = readTeeTimeResourceGuid(response);
+  const teeTime = normalizeGolfBoxDateTime(readTeeTimeValue(response)) ?? readTeeTimeValue(response);
+  const clubGuid = readTeeTimeClubGuid(response);
+  const memberClubGuid = user.clubGuid ?? clubGuid;
+  const date = teeTime ? golfBoxDateTimeToIsoDate(teeTime) : undefined;
+  const normalizedClubGuid = normalizeGuid(clubGuid);
+  if (
+    !resourceGuid ||
+    !teeTime ||
+    !memberClubGuid ||
+    !date ||
+    date < fromDate ||
+    date >= untilDate ||
+    (clubFilters.size > 0 && (!normalizedClubGuid || !clubFilters.has(normalizedClubGuid)))
+  ) {
+    return undefined;
+  }
+
+  const players = mapUpcomingPlayers(readTeeTimePlayers(response), user);
+  const status = readUpcomingStatus(players);
+  const courseName = readTeeTimeResourceName(response) ?? "GolfBox";
+  const clubName = readTeeTimeClubName(response) ?? user.clubName ?? "GolfBox";
+  const slotId = `${stripGuidBraces(resourceGuid)}|${teeTime}|${stripGuidBraces(memberClubGuid)}`;
+  const playerText = `${players.length || 0} player${players.length === 1 ? "" : "s"}`;
+
+  return {
+    slotId,
+    startsAt: golfBoxDateTimeToIso(teeTime) ?? formatGolfBoxDateTime(teeTime),
+    clubName,
+    courseName,
+    status,
+    playerCount: players.length,
+    players,
+    source: "teeTimesForPlayer",
+    summary: `${courseName}: ${formatGolfBoxDateTime(teeTime)} for ${playerText}.`
+  };
+}
+
+function mapUpcomingTeeTimeFromGimmie(
+  response: GimmieTeeTimeResponse,
+  user: AuthenticatedUser,
+  fromDate: string,
+  untilDate: string
+): UpcomingTeeTime | undefined {
+  const bookingId = toOptionalString(response.bookingId);
+  const teeTime = toOptionalString(response.teeTime);
+  const date = teeTime ? isoDatePart(teeTime) : undefined;
+  if (!bookingId || !teeTime || !date || date < fromDate || date >= untilDate) {
+    return undefined;
+  }
+
+  const players = (Array.isArray(response.players) ? response.players : []).map((player) => {
+    const mapped: UpcomingTeeTimePlayer = {};
+    const name = toOptionalString(player.name);
+    if (name) {
+      mapped.name = name;
+    }
+
+    const memberNumber = toOptionalString(player.memberId);
+    if (memberNumber) {
+      mapped.memberNumber = memberNumber;
+    }
+
+    if (memberNumber && normalizeSearchText(memberNumber) === normalizeSearchText(user.guid)) {
+      mapped.isCurrentUser = true;
+    } else if (matchesCurrentUserName(name, user)) {
+      mapped.isCurrentUser = true;
+    }
+
+    return mapped;
+  });
+  const courseName = toOptionalString(response.guideName) ?? "Gimmie";
+  const clubName = toOptionalString(response.clubName) ?? "Gimmie";
+  const startsAt = normalizeIsoDateTime(teeTime) ?? teeTime;
+  const playerText = `${players.length || 0} player${players.length === 1 ? "" : "s"}`;
+
+  return {
+    slotId: `gimmie|${toOptionalString(response.org) ?? "NGF"}|${bookingId}`,
+    startsAt,
+    clubName,
+    courseName,
+    status: toOptionalString(response.confirmedSkeletonId) ? "confirmed" : "pending",
+    playerCount: players.length,
+    players,
+    source: "gimmie",
+    summary: `${courseName}: ${startsAt} for ${playerText}.`
+  };
+}
+
+function mapUpcomingPlayers(players: TeeTimePlayerResponse[], user: AuthenticatedUser): UpcomingTeeTimePlayer[] {
+  return players.map((player) => {
+    const firstName = toOptionalString(player.FirstName ?? player.firstName);
+    const lastName = toOptionalString(player.LastName ?? player.lastName);
+    const derivedName = [firstName, lastName].filter(Boolean).join(" ");
+    const mapped: UpcomingTeeTimePlayer = {};
+    const name =
+      toOptionalString(player.FullName ?? player.fullName) ?? toOptionalString(player.Name ?? player.name) ?? (derivedName || undefined);
+    if (name) {
+      mapped.name = name;
+    }
+
+    const memberNumber = readPlayerMemberNumber(player);
+    if (memberNumber) {
+      mapped.memberNumber = memberNumber;
+    }
+
+    const clubName = readPlayerClubName(player);
+    if (clubName) {
+      mapped.clubName = clubName;
+    }
+
+    const confirmed = readPlayerConfirmed(player);
+    if (confirmed !== undefined) {
+      mapped.confirmed = confirmed;
+    }
+
+    const confirmable = readPlayerConfirmable(player);
+    if (confirmable !== undefined) {
+      mapped.confirmable = confirmable;
+    }
+
+    if (isCurrentUserPlayerResponse(player, user)) {
+      mapped.isCurrentUser = true;
+    }
+
+    return mapped;
+  });
+}
+
+function readUpcomingStatus(players: UpcomingTeeTimePlayer[]): "confirmed" | "pending" {
+  return players.some((player) => player.confirmed === false && player.confirmable !== false) ? "pending" : "confirmed";
+}
+
+function isCurrentUserPlayerResponse(player: TeeTimePlayerResponse, user: AuthenticatedUser): boolean {
+  const userGuid = normalizeGuid(user.guid);
+  if (userGuid) {
+    const playerGuid = normalizeGuid(readPlayerMemberGuid(player));
+    if (playerGuid && playerGuid === userGuid) {
+      return true;
+    }
+  }
+
+  const userMemberNumber = normalizeSearchText(user.memberNumber);
+  if (userMemberNumber) {
+    const playerMemberNumber = normalizeSearchText(readPlayerMemberNumber(player));
+    if (playerMemberNumber && playerMemberNumber === userMemberNumber) {
+      return true;
+    }
+  }
+
+  return matchesCurrentUserName(readPlayerResponseName(player), user);
+}
+
+function readPlayerResponseName(player: TeeTimePlayerResponse): string | undefined {
+  const firstName = toOptionalString(player.FirstName ?? player.firstName);
+  const lastName = toOptionalString(player.LastName ?? player.lastName);
+  const derivedName = [firstName, lastName].filter(Boolean).join(" ");
+  return toOptionalString(player.FullName ?? player.fullName) ?? toOptionalString(player.Name ?? player.name) ?? (derivedName || undefined);
+}
+
+function matchesCurrentUserName(name: string | undefined, user: AuthenticatedUser): boolean {
+  const userName = normalizeSearchText(user.fullName);
+  const candidateName = normalizeSearchText(name);
+  return Boolean(userName && candidateName && candidateName === userName);
+}
+
 function parseTeeTimeResponses(value: unknown): TeeTimeResponse[] {
   if (Array.isArray(value)) {
     return value.filter(isRecord) as TeeTimeResponse[];
   }
 
-  const values = pickArray(value, "TeeTimes", "Times", "Bookings", "Items", "Data", "Result");
+  const values = pickArray(value, "TeeTimes", "teeTimes", "Times", "times", "Bookings", "bookings", "Items", "items", "Data", "data", "Result", "result");
   if (values.length > 0) {
     return values.filter(isRecord) as TeeTimeResponse[];
   }
 
-  const single = pickRecord(value, "TeeTime", "Data", "Result");
+  const single = pickRecord(value, "TeeTime", "teeTime", "Data", "data", "Result", "result");
   return single ? [single as TeeTimeResponse] : [];
 }
 
@@ -1636,8 +2409,8 @@ function findTeeTimeForSlot(teeTimes: TeeTimeResponse[], slot: SlotKey): TeeTime
   const resourceGuid = normalizeGuid(slot.resourceGuid);
 
   return teeTimes.find((teeTime) => {
-    const candidateResourceGuid = normalizeGuid(toOptionalString(teeTime.ResourceGuid));
-    const candidateTeeTime = toOptionalString(teeTime.TeeTime);
+    const candidateResourceGuid = normalizeGuid(readTeeTimeResourceGuid(teeTime));
+    const candidateTeeTime = readTeeTimeValue(teeTime);
 
     return candidateResourceGuid === resourceGuid && candidateTeeTime === slot.teeTime;
   });
@@ -1794,6 +2567,195 @@ function parseWebBookingResources(html: string, pageUrl: string): TeeResource[] 
   ];
 }
 
+function findWebMyTimesPath(html: string): string | undefined {
+  for (const match of html.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)) {
+    const attrs = match[1] ?? "";
+    const text = htmlToPlainText(match[2] ?? "");
+    const title = decodeXmlEntities(readHtmlAttr(attrs, "title") ?? "");
+    if (!/^mine tider$/i.test(text) && !/^mine tider$/i.test(title)) {
+      continue;
+    }
+
+    const href = decodeXmlEntities(readHtmlAttr(attrs, "href") ?? "");
+    if (href) {
+      return href;
+    }
+  }
+
+  return undefined;
+}
+
+function parseWebUpcomingTeeTimes(
+  html: string,
+  user: AuthenticatedUser,
+  fromDate: string,
+  untilDate: string
+): UpcomingTeeTime[] {
+  const myTimesHtml = isolateWebMyTimesHtml(html);
+  if (!myTimesHtml) {
+    return [];
+  }
+
+  return [...myTimesHtml.matchAll(/<div\b[^>]*\bclass=["'][^"']*\bborder\b[^"']*\bbg-selected\b[^"']*["'][^>]*>([\s\S]*?)(?=<div\b[^>]*\bclass=["'][^"']*\bborder\b[^"']*\bbg-selected\b|<h3\b|<\/form>|$)/gi)]
+    .map((match) => mapWebUpcomingTeeTimeCard(match[0], user, fromDate, untilDate))
+    .filter((teeTime): teeTime is UpcomingTeeTime => teeTime !== undefined);
+}
+
+function isolateWebMyTimesHtml(html: string): string | undefined {
+  const myTimesHeader = /<h3\b[^>]*>[\s\S]{0,500}?\bMine tider\b[\s\S]{0,500}?<\/h3>/i.exec(html);
+  if (!myTimesHeader?.index) {
+    return undefined;
+  }
+
+  const rest = html.slice(myTimesHeader.index);
+  const tournamentIndex = rest.search(/<h3\b[^>]*>[\s\S]{0,500}?\bMine turneringer\b[\s\S]{0,500}?<\/h3>/i);
+  return tournamentIndex >= 0 ? rest.slice(0, tournamentIndex) : rest;
+}
+
+function mapWebUpcomingTeeTimeCard(
+  cardHtml: string,
+  user: AuthenticatedUser,
+  fromDate: string,
+  untilDate: string
+): UpcomingTeeTime | undefined {
+  const card = readWebUpcomingTeeTimeCard(cardHtml);
+  if (!card || card.date < fromDate || card.date >= untilDate) {
+    return undefined;
+  }
+
+  const memberClubGuid = user.clubGuid;
+  if (!memberClubGuid) {
+    return undefined;
+  }
+
+  const startsAt = toNorwayLocalIso(card.date, card.timeOfDay);
+  const slotId = `${stripGuidBraces(card.resourceGuid)}|${card.bookingStart}|${stripGuidBraces(memberClubGuid)}`;
+  const players = card.players.map((player) => ({
+    ...player,
+    ...(isCurrentUserWebPlayer(player, user) ? { isCurrentUser: true } : {})
+  }));
+  const playerText = `${players.length || 0} player${players.length === 1 ? "" : "s"}`;
+
+  return {
+    slotId,
+    startsAt,
+    clubName: card.clubName,
+    courseName: card.courseName,
+    status: players.some((player) => player.confirmed === true) ? "confirmed" : "pending",
+    playerCount: players.length,
+    players,
+    source: "webPortal",
+    summary: `${card.courseName}: ${startsAt} for ${playerText}.`
+  };
+}
+
+function readWebUpcomingTeeTimeCard(cardHtml: string): WebUpcomingTeeTimeCard | undefined {
+  const goToTimeLink = [...cardHtml.matchAll(/<a\b([^>]*)>/gi)]
+    .map((match) => decodeXmlEntities(readHtmlAttr(match[1] ?? "", "href") ?? ""))
+    .find((href) => /Ressource_GUID=/i.test(href) && /Booking_Start=/i.test(href));
+  if (!goToTimeLink) {
+    return undefined;
+  }
+
+  const linkUrl = new URL(goToTimeLink, "https://www.golfbox.no/");
+  const resourceGuid = linkUrl.searchParams.get("Ressource_GUID");
+  const bookingStart = normalizeGolfBoxDateTime(linkUrl.searchParams.get("Booking_Start") ?? undefined);
+  const details = readWebUpcomingCardDetails(cardHtml);
+  if (!resourceGuid || !bookingStart || !details) {
+    return undefined;
+  }
+
+  return {
+    date: golfBoxDateTimeToIsoDate(bookingStart),
+    timeOfDay: golfBoxDateTimeToTimeOfDay(bookingStart),
+    clubName: details.clubName,
+    courseName: details.courseName,
+    resourceGuid,
+    bookingStart,
+    players: readWebUpcomingPlayers(cardHtml)
+  };
+}
+
+function readWebUpcomingCardDetails(cardHtml: string): { clubName: string; courseName: string } | undefined {
+  const calendarMatch = cardHtml.match(/CalendarAppointmentSelect\([\s\S]*?'Starttid:[\s\S]*?',\s*'([^']+)'\s*,\s*'([^']+)'\s*\)/i);
+  if (calendarMatch) {
+    return {
+      clubName: decodeXmlEntities(calendarMatch[1]),
+      courseName: decodeXmlEntities(calendarMatch[2])
+    };
+  }
+
+  const detailValues = [...cardHtml.matchAll(/<div\b[^>]*\bclass=["'][^"']*\bd-flex align-items-center[^"']*["'][^>]*>\s*<div>[\s\S]*?<\/div>\s*([^<][\s\S]*?)<\/div>/gi)]
+    .map((match) => htmlToPlainText(match[1] ?? ""))
+    .filter(Boolean);
+  const clubName = detailValues.find((value) => /golfklubb/i.test(value));
+  const clubIndex = clubName ? detailValues.indexOf(clubName) : -1;
+  const courseName = clubIndex >= 0 ? detailValues.slice(clubIndex + 1).find((value) => !/^\d{1,2}:\d{2}$/.test(value)) : undefined;
+  return clubName && courseName ? { clubName, courseName } : undefined;
+}
+
+function readWebUpcomingPlayers(cardHtml: string): UpcomingTeeTimePlayer[] {
+  const tablePlayers = readWebUpcomingTablePlayers(cardHtml);
+  if (tablePlayers.length > 0) {
+    return tablePlayers;
+  }
+
+  return [...cardHtml.matchAll(/<div\b[^>]*\bclass=["'][^"']*\bpx-2 py-1\b[^"']*["'][^>]*>([\s\S]*?)(?=<div\b[^>]*\bclass=["'][^"']*\bpx-2 py-1\b|<\/div>\s*<\/div>\s*<\/div>|<div\b[^>]*\bclass=["'][^"']*\bborder\b[^"']*\bbg-selected\b|$)/gi)]
+    .map((match) => readWebUpcomingPlayer(match[1] ?? ""))
+    .filter((player): player is UpcomingTeeTimePlayer => player !== undefined);
+}
+
+function readWebUpcomingTablePlayers(cardHtml: string): UpcomingTeeTimePlayer[] {
+  return [...cardHtml.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)]
+    .map((match) => {
+      const cells = [...(match[1] ?? "").matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map((cell) => htmlToPlainText(cell[1] ?? ""));
+      if (cells.length < 4 || !/^\d+$/.test(cells[0])) {
+        return undefined;
+      }
+
+      const player: UpcomingTeeTimePlayer = {
+        name: cells[1],
+        memberNumber: cells[2],
+        clubName: cells[3]
+      };
+      if (/bestilt|bekreftet|confirmed/i.test(cells[5] ?? "")) {
+        player.confirmed = true;
+      }
+
+      return player.name && player.memberNumber ? player : undefined;
+    })
+    .filter((player): player is UpcomingTeeTimePlayer => player !== undefined);
+}
+
+function readWebUpcomingPlayer(playerHtml: string): UpcomingTeeTimePlayer | undefined {
+  const text = htmlToPlainText(playerHtml);
+  const match = text.match(/^\s*\d+\s+(.+?)\s+(\d+-\d+)\s+(.+?Golfklubb)\s+(?:[+\-]?\d+(?:[,.]\d+)?)?\s*(bestilt|bekreftet|confirmed)?\s*$/i);
+  if (!match) {
+    return undefined;
+  }
+
+  const player: UpcomingTeeTimePlayer = {
+    name: match[1].trim(),
+    memberNumber: match[2].trim(),
+    clubName: match[3].trim()
+  };
+  if (match[4]) {
+    player.confirmed = true;
+  }
+
+  return player;
+}
+
+function isCurrentUserWebPlayer(player: UpcomingTeeTimePlayer, user: AuthenticatedUser): boolean {
+  const userMemberNumber = normalizeSearchText(user.memberNumber);
+  const playerMemberNumber = normalizeSearchText(player.memberNumber);
+  if (userMemberNumber && playerMemberNumber && userMemberNumber === playerMemberNumber) {
+    return true;
+  }
+
+  return matchesCurrentUserName(player.name, user);
+}
+
 function parseWebFormFields(html: string): URLSearchParams {
   const form = new URLSearchParams();
 
@@ -1883,21 +2845,41 @@ function htmlToPlainText(html: string): string {
     .trim();
 }
 
-function mapUser(response: MobileHubUserResponse): AuthenticatedUser {
-  const firstName = toOptionalString(response.FirstName);
-  const lastName = toOptionalString(response.LastName);
+function mapUser(response: MobileHubUserResponse): AuthenticatedGolfBoxUser {
+  const firstName = toOptionalString(response.FirstName ?? response.firstName);
+  const lastName = toOptionalString(response.LastName ?? response.lastName);
   const derivedName = [firstName, lastName].filter(Boolean).join(" ");
-
-  return {
-    guid: toOptionalString(response.Guid),
-    fullName: toOptionalString(response.FullName) ?? toOptionalString(response.Name) ?? (derivedName || undefined),
-    clubGuid: toOptionalString(response.ClubGuid),
-    clubName: toOptionalString(response.ClubName),
-    memberNumber: toOptionalString(response.MemberNumber),
-    countryIsoCode: toOptionalString(response.CountryIsoCode),
-    hasAccessToBooking: toOptionalBoolean(response.HasAccessToBooking),
-    useNewApp: toOptionalBoolean(response.UseNewApp)
+  const user: AuthenticatedGolfBoxUser = {
+    guid: toOptionalString(response.Guid ?? response.guid),
+    fullName:
+      toOptionalString(response.FullName ?? response.fullName) ??
+      toOptionalString(response.Name ?? response.name) ??
+      (derivedName || undefined),
+    clubGuid: toOptionalString(response.ClubGuid ?? response.clubGuid),
+    clubName: toOptionalString(response.ClubName ?? response.clubName),
+    memberNumber: toOptionalString(response.MemberNumber ?? response.memberNumber),
+    countryIsoCode: toOptionalString(response.CountryIsoCode ?? response.countryIsoCode),
+    hasAccessToBooking: toOptionalBoolean(response.HasAccessToBooking ?? response.hasAccessToBooking),
+    useNewApp: toOptionalBoolean(response.UseNewApp ?? response.useNewApp)
   };
+
+  const newAppSsoToken = toOptionalString(response.NewAppSSOToken ?? response.newAppSSOToken);
+  if (newAppSsoToken) {
+    user.newAppSsoToken = newAppSsoToken;
+  }
+
+  return user;
+}
+
+function buildEmptyUseNewAppTeeTimesError(routeHint: string | undefined, detail?: string): string {
+  return (
+    "GolfBox MobileHub teeTimesForPlayer returned no upcoming tee times for this UseNewApp account. " +
+    "Live GolfBox profile data says this account uses the newer app flow, so an empty teeTimesForPlayer response is not proof that the user has no tee times. " +
+    (routeHint ? `${routeHint} ` : "") +
+    (detail ? `${detail} ` : "") +
+    "Gimmie/new-app API support is required to list these tee times. " +
+    "The MCP uses the authenticated Mine tider web portal as a final read-only fallback, but does not scan day grids for private future tee times."
+  );
 }
 
 function parseTeeTimeXml(
@@ -2072,7 +3054,6 @@ function isClosedSlot(attrs: Record<string, string>): boolean {
     "expired",
     "portalClosed",
     "isBlank",
-    "isTooFarAheadPortal",
     "closed",
     "blocked"
   ];
@@ -2137,6 +3118,12 @@ function buildSlotNotes(attrs: Record<string, string>): string[] {
     notes.push(`GolfBox color marker: ${color}.`);
   }
 
+  if (isTruthy(readAttr(attrs, "isTooFarAheadPortal"))) {
+    notes.push("GolfBox lists this future tee time, but portal booking is not open yet.");
+  } else if (isTruthy(readAttr(attrs, "isTooFarAheadTouch"))) {
+    notes.push("GolfBox mobile booking is not open yet; web portal booking may still be available.");
+  }
+
   return notes;
 }
 
@@ -2154,6 +3141,51 @@ function toGolfBoxDate(date: string): string {
 
 function toGolfBoxDateTime(date: string, timeOfDay: string): string {
   return `${toGolfBoxDate(date)}T${timeOfDay.replace(":", "")}00`;
+}
+
+function isRedirect(response: Response): boolean {
+  return response.status >= 300 && response.status < 400;
+}
+
+function decodeHtmlAttribute(value: string | undefined): string | undefined {
+  return value
+    ?.replace(/&amp;/g, "&")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#x27;|&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+function readCookieHeader(cookies: Map<string, Map<string, string>>, url: string): string | undefined {
+  const values = cookies.get(new URL(url).origin);
+  if (!values || values.size === 0) {
+    return undefined;
+  }
+
+  return [...values.entries()].map(([key, value]) => `${key}=${value}`).join("; ");
+}
+
+function storeResponseCookies(cookies: Map<string, Map<string, string>>, url: string, response: Response): void {
+  const getSetCookie = (response.headers as Headers & { getSetCookie?: () => string[] }).getSetCookie;
+  const setCookies = getSetCookie ? getSetCookie.call(response.headers) : response.headers.get("set-cookie") ? [response.headers.get("set-cookie") as string] : [];
+  if (setCookies.length === 0) {
+    return;
+  }
+
+  const origin = new URL(url).origin;
+  let values = cookies.get(origin);
+  if (!values) {
+    values = new Map<string, string>();
+    cookies.set(origin, values);
+  }
+
+  for (const cookie of setCookies) {
+    const [keyValue] = cookie.split(";");
+    const separator = keyValue.indexOf("=");
+    if (separator > 0) {
+      values.set(keyValue.slice(0, separator), keyValue.slice(separator + 1));
+    }
+  }
 }
 
 function toNorwayLocalIso(date: string, timeOfDay: string): string {
