@@ -9,6 +9,8 @@ import type {
   CreateBookingRequest,
   GolfBoxClient,
   TeeTimeSearch,
+  TeeTimePlayerMatch,
+  TeeTimePlayerSearch,
   TeeTimeSlot,
   Tournament,
   UpcomingTeeTime,
@@ -425,6 +427,50 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
     }
 
     return slots.sort((left, right) => left.startsAt.localeCompare(right.startsAt));
+  }
+
+  async searchTeeTimePlayers(search: TeeTimePlayerSearch): Promise<TeeTimePlayerMatch[]> {
+    const user = await this.getAuthenticatedUser();
+    if (user.hasAccessToBooking === false) {
+      throw new Error("Authenticated GolfBox user does not have booking access.");
+    }
+
+    const query = search.query.trim();
+    if (!query) {
+      return [];
+    }
+
+    const mobileHubResources = await this.listResourcesForClub(search.clubId);
+    const resources =
+      mobileHubResources.length > 0 ? mobileHubResources : await this.listWebResourcesForClub(search.clubId);
+    const memberClubGuid = user.clubGuid ?? search.clubId;
+    const matches: TeeTimePlayerMatch[] = [];
+
+    for (const resource of resources) {
+      const xml = await this.authorizedTextRequest(
+        `/teeTime/booking?methodName=teeTimesForDay&resourceGuid=${encodeURIComponent(resource.guid)}` +
+          `&teeTime=${encodeURIComponent(toGolfBoxDate(search.date))}` +
+          `&memberclubguid=${encodeURIComponent(memberClubGuid)}`,
+        {
+          method: "GET",
+          headers: {
+            Accept: "application/xml"
+          }
+        }
+      );
+
+      matches.push(...parseTeeTimePlayerMatchesXml(xml, search, resource, memberClubGuid));
+    }
+
+    if (this.hasCredentials()) {
+      try {
+        matches.push(...(await this.searchWebTeeTimePlayers(search, memberClubGuid)));
+      } catch {
+        // MobileHub results are still useful. Web grid lookup is a read-only fallback for names hidden in MobileHub.
+      }
+    }
+
+    return dedupeTeeTimePlayerMatches(matches).sort((left, right) => left.startsAt.localeCompare(right.startsAt));
   }
 
   async listBookings(): Promise<Booking[]> {
@@ -1518,6 +1564,79 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
     }
   }
 
+  private async searchWebTeeTimePlayers(
+    search: TeeTimePlayerSearch,
+    memberClubGuid: string
+  ): Promise<TeeTimePlayerMatch[]> {
+    const session = await this.createWebSession();
+    const gridPage = await this.webTextRequest(session, "/site/my_golfbox/ressources/booking/grid.asp", {
+      method: "GET",
+      headers: {
+        Accept: "text/html"
+      }
+    });
+    const clubPage = await this.postWebGridForm(session, gridPage, {
+      command: "getClub",
+      commandValue: "",
+      fields: {
+        ddlClub: stripGuidBraces(search.clubId)
+      }
+    });
+    const resources = parseWebBookingResources(clubPage.text, clubPage.url);
+    const selectedResources =
+      resources.length > 0 ? resources : [{ guid: search.clubId, name: "GolfBox web grid" } satisfies TeeResource];
+    const matches: TeeTimePlayerMatch[] = [];
+
+    for (const resource of selectedResources) {
+      const resourcePage = await this.postWebGridForm(session, clubPage, {
+        command: "changeRessource",
+        commandValue: "",
+        fields: {
+          ddlClub: stripGuidBraces(search.clubId),
+          ddlRessource_GUID: toWebGuid(resource.guid)
+        }
+      });
+      const datePage = await this.postWebGridForm(session, resourcePage, {
+        command: "calendar1_select",
+        commandValue: `${toGolfBoxDate(search.date)}T000000`,
+        fields: {
+          ddlClub: stripGuidBraces(search.clubId),
+          ddlRessource_GUID: toWebGuid(resource.guid),
+          BookingDate: toWebBookingDate(search.date),
+          chkShow_Names: "1",
+          chkShowPlayerDetails: "on"
+        }
+      });
+
+      matches.push(...parseWebTeeTimePlayerMatches(datePage.text, search, resource, memberClubGuid));
+    }
+
+    return matches;
+  }
+
+  private async postWebGridForm(
+    session: WebCookieJar,
+    page: WebTextResponse,
+    options: { command: string; commandValue: string; fields: Record<string, string> }
+  ): Promise<WebTextResponse> {
+    const form = parseWebFormFields(page.text);
+    form.set("command", options.command);
+    form.set("commandValue", options.commandValue);
+    for (const [name, value] of Object.entries(options.fields)) {
+      form.set(name, value);
+    }
+
+    return this.webTextRequest(session, page.url, {
+      method: "POST",
+      headers: {
+        Accept: "text/html",
+        "Content-Type": "application/x-www-form-urlencoded",
+        Referer: page.url
+      },
+      body: form.toString()
+    });
+  }
+
   private async createWebSession(): Promise<WebCookieJar> {
     const session = new WebCookieJar();
     await this.webTextRequest(
@@ -2527,6 +2646,10 @@ function normalizeSearchText(value: string | undefined): string {
   return (value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function sleep(delayMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
@@ -2942,6 +3065,183 @@ function parseTeeTimeXml(
   return slots;
 }
 
+function parseTeeTimePlayerMatchesXml(
+  xml: string,
+  search: TeeTimePlayerSearch,
+  resource: TeeResource,
+  memberClubGuid: string
+): TeeTimePlayerMatch[] {
+  const setup = findFirstXmlTag(xml, "Setup")?.attrs ?? {};
+  const courseName = readAttr(setup, "Ressource_Name", "ResourceName", "RessourceName") ?? resource.name;
+  const bookingResourceGuid =
+    readAttr(setup, "Ressource_GUID", "Resource_GUID", "ResourceGuid", "ResourceGUID") ?? resource.guid;
+  const normalizedQuery = normalizeSearchText(search.query);
+  const matches: TeeTimePlayerMatch[] = [];
+
+  if (!normalizedQuery) {
+    return matches;
+  }
+
+  for (const slotTag of findXmlTags(xml, "slot")) {
+    const timeOfDay = readSlotTime(slotTag.attrs);
+    if (!timeOfDay || !isWithinPlayerSearchWindow(timeOfDay, search)) {
+      continue;
+    }
+
+    for (const playerNode of findXmlTags(slotTag.body, "slotnode")) {
+      const playerText = readPlayerSearchText(playerNode.attrs);
+      if (!playerText || !normalizeSearchText(playerText).includes(normalizedQuery)) {
+        continue;
+      }
+
+      const playerName = readAttr(playerNode.attrs, "MemberName", "PlayerName", "Name", "Description") ?? playerText;
+      const golfBoxDateTime = toGolfBoxDateTime(search.date, timeOfDay);
+      matches.push({
+        slotId: `${stripGuidBraces(bookingResourceGuid)}|${golfBoxDateTime}|${memberClubGuid}`,
+        clubId: search.clubId,
+        courseName,
+        startsAt: toNorwayLocalIso(search.date, timeOfDay),
+        playerName,
+        matchedText: playerText,
+        source: "teeTimesForDay"
+      });
+    }
+  }
+
+  return matches;
+}
+
+function parseWebTeeTimePlayerMatches(
+  html: string,
+  search: TeeTimePlayerSearch,
+  resource: TeeResource,
+  memberClubGuid: string
+): TeeTimePlayerMatch[] {
+  const matches: TeeTimePlayerMatch[] = [];
+  const query = search.query.trim();
+  if (!query) {
+    return matches;
+  }
+
+  const queryPattern = new RegExp(escapeRegex(query), "gi");
+  const bookingLinks = readWebBookingStartLinks(html);
+  let queryMatch: RegExpExecArray | null;
+
+  while ((queryMatch = queryPattern.exec(html)) !== null) {
+    const link = findNearestWebBookingLink(bookingLinks, queryMatch.index);
+    if (!link) {
+      continue;
+    }
+
+    const date = golfBoxDateTimeToIsoDate(link.bookingStart);
+    const timeOfDay = golfBoxDateTimeToTimeOfDay(link.bookingStart);
+    if (date !== search.date || !isWithinPlayerSearchWindow(timeOfDay, search)) {
+      continue;
+    }
+
+    const matchedText = readWebPlayerMatchContext(html, queryMatch.index, query);
+    matches.push({
+      slotId: `${stripGuidBraces(link.resourceGuid ?? resource.guid)}|${link.bookingStart}|${stripGuidBraces(memberClubGuid)}`,
+      clubId: search.clubId,
+      courseName: resource.name,
+      startsAt: toNorwayLocalIso(search.date, timeOfDay),
+      playerName: matchedText,
+      matchedText,
+      source: "webPortal"
+    });
+  }
+
+  return matches;
+}
+
+function readWebBookingStartLinks(html: string): { index: number; resourceGuid?: string; bookingStart: string }[] {
+  const links: { index: number; resourceGuid?: string; bookingStart: string }[] = [];
+  const hrefPattern = /<a\b[^>]*\bhref=["']([^"']*Booking_Start=[^"']+)["'][^>]*>/gi;
+  let hrefMatch: RegExpExecArray | null;
+
+  while ((hrefMatch = hrefPattern.exec(html)) !== null) {
+    const href = decodeXmlEntities(hrefMatch[1] ?? "");
+    const url = new URL(href, "https://www.golfbox.no/");
+    const bookingStart = normalizeGolfBoxDateTime(url.searchParams.get("Booking_Start") ?? undefined);
+    const resourceGuid = normalizeGuid(url.searchParams.get("Ressource_GUID") ?? undefined);
+    if (!bookingStart) {
+      continue;
+    }
+
+    links.push({
+      index: hrefMatch.index,
+      ...(resourceGuid ? { resourceGuid } : {}),
+      bookingStart
+    });
+  }
+
+  const showWindowPattern = /showWindow\(\s*['"](\d{8}T\d{6})['"]/gi;
+  let showWindowMatch: RegExpExecArray | null;
+  while ((showWindowMatch = showWindowPattern.exec(html)) !== null) {
+    const bookingStart = normalizeGolfBoxDateTime(showWindowMatch[1]);
+    if (!bookingStart) {
+      continue;
+    }
+
+    links.push({
+      index: showWindowMatch.index,
+      bookingStart
+    });
+  }
+
+  return links;
+}
+
+function findNearestWebBookingLink(
+  links: { index: number; resourceGuid?: string; bookingStart: string }[],
+  matchIndex: number
+): { index: number; resourceGuid?: string; bookingStart: string } | undefined {
+  let nearest: { index: number; resourceGuid?: string; bookingStart: string } | undefined;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+
+  for (const link of links) {
+    const distance = Math.abs(matchIndex - link.index);
+    if (distance < nearestDistance && distance < 5_000) {
+      nearest = link;
+      nearestDistance = distance;
+    }
+  }
+
+  return nearest;
+}
+
+function readWebPlayerMatchContext(html: string, matchIndex: number, query: string): string {
+  const tagStart = html.lastIndexOf("<", matchIndex);
+  const tagEnd = html.indexOf("</", matchIndex);
+  if (tagStart >= 0 && tagEnd > matchIndex) {
+    const tagText = htmlToPlainText(html.slice(tagStart, tagEnd));
+    if (normalizeSearchText(tagText).includes(normalizeSearchText(query))) {
+      return tagText;
+    }
+  }
+
+  const context = htmlToPlainText(html.slice(Math.max(0, matchIndex - 300), matchIndex + 300));
+  const normalizedQuery = normalizeSearchText(query);
+  const parts = context
+    .split(/\s{2,}|[|]/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const exactPart = parts.find((part) => normalizeSearchText(part).includes(normalizedQuery));
+  return exactPart ?? query;
+}
+
+function dedupeTeeTimePlayerMatches(matches: TeeTimePlayerMatch[]): TeeTimePlayerMatch[] {
+  const deduped = new Map<string, TeeTimePlayerMatch>();
+  for (const match of matches) {
+    const key = `${match.slotId}|${normalizeSearchText(match.matchedText)}|${match.source}`;
+    if (!deduped.has(key)) {
+      deduped.set(key, match);
+    }
+  }
+
+  return [...deduped.values()];
+}
+
 function findFirstXmlTag(xml: string, tagName: string): XmlTag | undefined {
   return findXmlTags(xml, tagName)[0];
 }
@@ -3049,6 +3349,18 @@ function isWithinSearchWindow(timeOfDay: string, search: TeeTimeSearch): boolean
   return true;
 }
 
+function isWithinPlayerSearchWindow(timeOfDay: string, search: TeeTimePlayerSearch): boolean {
+  if (search.earliestTime && timeOfDay < search.earliestTime) {
+    return false;
+  }
+
+  if (search.latestTime && timeOfDay > search.latestTime) {
+    return false;
+  }
+
+  return true;
+}
+
 function isClosedSlot(attrs: Record<string, string>): boolean {
   const closedFlags = [
     "expired",
@@ -3068,6 +3380,17 @@ function isClosedSlot(attrs: Record<string, string>): boolean {
 
 function shouldUseWebPortalBooking(attrs: Record<string, string>): boolean {
   return isTruthy(readAttr(attrs, "touchClosed")) || isTruthy(readAttr(attrs, "isTooFarAheadTouch"));
+}
+
+function readPlayerSearchText(attrs: Record<string, string>): string | undefined {
+  const values = [
+    readAttr(attrs, "MemberName", "PlayerName", "Name"),
+    readAttr(attrs, "Description"),
+    readAttr(attrs, "MemberNumber", "MemberId"),
+    readAttr(attrs, "Reference", "BookingGuid", "guid")
+  ].filter((value): value is string => Boolean(value));
+
+  return values.length > 0 ? values.join(" ") : undefined;
 }
 
 function countOccupiedSpots(playerNodes: XmlTag[]): number {
@@ -3137,6 +3460,10 @@ function isTruthy(value: string | undefined): boolean {
 
 function toGolfBoxDate(date: string): string {
   return date.replace(/-/g, "");
+}
+
+function toWebBookingDate(date: string): string {
+  return `${date.slice(8, 10)}.${date.slice(5, 7)}.${date.slice(0, 4)}`;
 }
 
 function toGolfBoxDateTime(date: string, timeOfDay: string): string {

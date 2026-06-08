@@ -77,6 +77,22 @@ export function registerGolfBoxTools(server: McpServer, client: GolfBoxClient, c
   );
 
   server.registerTool(
+    "golfbox_search_tee_time_players",
+    {
+      title: "Search tee-time players",
+      description: "Search a club tee sheet for player names or booking text on a specific date.",
+      inputSchema: {
+        clubId: z.string().min(1),
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        query: z.string().min(1),
+        earliestTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+        latestTime: z.string().regex(/^\d{2}:\d{2}$/).optional()
+      }
+    },
+    async (input) => jsonResult(await client.searchTeeTimePlayers(input))
+  );
+
+  server.registerTool(
     "golfbox_list_bookings",
     {
       title: "List GolfBox bookings",

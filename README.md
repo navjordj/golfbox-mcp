@@ -74,6 +74,7 @@ If you already have a valid MobileHub token, set `GOLFBOX_API_TOKEN` instead of 
 - `golfbox_authenticate`: authenticate and validate the current GolfBox credentials.
 - `golfbox_list_clubs`: list GolfBox clubs known by the adapter.
 - `golfbox_search_tee_times`: search available tee times for a club and date.
+- `golfbox_search_tee_time_players`: search a club tee sheet for player names or booking text on a specific date.
 - `golfbox_list_bookings`: list tee-time bookings for the authenticated user.
 - `golfbox_list_upcoming_tee_times`: list upcoming private tee times for the authenticated user. It uses GolfBox `teeTimesForPlayer` first; Norwegian `UseNewApp` accounts then try authenticated Gimmie GraphQL and finally the read-only GolfBox `Mine tider` web portal. Optional `clubId`/`clubIds` only filter `teeTimesForPlayer` results.
 - `golfbox_list_tournaments`: list tournaments the authenticated user is registered for or has participated in.

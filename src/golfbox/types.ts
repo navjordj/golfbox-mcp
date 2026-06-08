@@ -27,6 +27,24 @@ export interface TeeTimeSlot {
   notes?: string[];
 }
 
+export interface TeeTimePlayerSearch {
+  clubId: string;
+  date: string;
+  query: string;
+  earliestTime?: string;
+  latestTime?: string;
+}
+
+export interface TeeTimePlayerMatch {
+  slotId: string;
+  clubId: string;
+  courseName: string;
+  startsAt: string;
+  playerName: string;
+  matchedText: string;
+  source: "teeTimesForDay" | "webPortal";
+}
+
 export interface Player {
   name: string;
   golfId?: string;
@@ -130,6 +148,7 @@ export interface GolfBoxClient {
   authenticate(): Promise<AuthStatus>;
   listClubs(): Promise<Club[]>;
   searchTeeTimes(search: TeeTimeSearch): Promise<TeeTimeSlot[]>;
+  searchTeeTimePlayers(search: TeeTimePlayerSearch): Promise<TeeTimePlayerMatch[]>;
   listBookings(): Promise<Booking[]>;
   listUpcomingTeeTimes(search?: UpcomingTeeTimeSearch): Promise<UpcomingTeeTime[]>;
   listTournaments(): Promise<Tournament[]>;

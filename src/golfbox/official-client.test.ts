@@ -316,6 +316,236 @@ test("official client searches tee times from resource day XML", async () => {
   );
 });
 
+test("official client searches tee-sheet player names from resource day XML", async () => {
+  await withMockFetch(
+    (url, _init, headers) => {
+      if (url.pathname === "/authentication") {
+        return textResponse("player-search-token");
+      }
+
+      if (url.pathname === "/profile/member") {
+        assert.equal(headers.get("Authorization"), "player-search-token");
+        return jsonResponse({
+          Guid: "user-guid",
+          ClubGuid: "member-club-guid",
+          HasAccessToBooking: true
+        });
+      }
+
+      if (url.pathname === "/teeTime/booking" && url.searchParams.get("methodName") === "resourcesForClub") {
+        assert.equal(headers.get("Authorization"), "player-search-token");
+        return jsonResponse([
+          {
+            Guid: "resource-1",
+            Name: "Grini Golfbane"
+          }
+        ]);
+      }
+
+      if (url.pathname === "/teeTime/booking" && url.searchParams.get("methodName") === "teeTimesForDay") {
+        assert.equal(headers.get("Authorization"), "player-search-token");
+        assert.equal(headers.get("Accept"), "application/xml");
+        assert.equal(url.searchParams.get("resourceGuid"), "resource-1");
+        assert.equal(url.searchParams.get("teeTime"), "20260609");
+        assert.equal(url.searchParams.get("memberclubguid"), "member-club-guid");
+
+        return xmlResponse(`
+          <root>
+            <Setup MaxNumberOfPlayers="4" Ressource_GUID="booking-resource-1" Ressource_Name="Grini Golfbane" />
+            <slot time="08:10">
+              <slotnode BookingGuid="booking-1" MemberName="Other Player" />
+            </slot>
+            <slot time="16:40">
+              <slotnode BookingGuid="booking-2" MemberName="Jonas Fagermo" />
+            </slot>
+          </root>
+        `);
+      }
+
+      return new Response("", { status: 404 });
+    },
+    async () => {
+      const client = new OfficialGolfBoxClient({
+        apiBaseUrl: "https://example.test/",
+        allowUntrustedGolfBoxUrls: true,
+        username: "member@example.com",
+        password: "secret",
+        country: "NO"
+      });
+
+      const matches = await client.searchTeeTimePlayers({
+        clubId: "club-guid",
+        date: "2026-06-09",
+        query: "fagermo"
+      });
+
+      assert.deepEqual(matches, [
+        {
+          slotId: "booking-resource-1|20260609T164000|member-club-guid",
+          clubId: "club-guid",
+          courseName: "Grini Golfbane",
+          startsAt: "2026-06-09T16:40:00+02:00",
+          playerName: "Jonas Fagermo",
+          matchedText: "Jonas Fagermo booking-2",
+          source: "teeTimesForDay"
+        }
+      ]);
+    }
+  );
+});
+
+test("official client falls back to web tee-sheet player search when MobileHub hides names", async () => {
+  await withMockFetch(
+    (url, _init, headers, body) => {
+      if (url.hostname === "example.test" && url.pathname === "/authentication") {
+        return textResponse("player-web-token");
+      }
+
+      if (url.hostname === "example.test" && url.pathname === "/profile/member") {
+        return jsonResponse({
+          Guid: "user-guid",
+          ClubGuid: "member-club-guid",
+          HasAccessToBooking: true
+        });
+      }
+
+      if (
+        url.hostname === "example.test" &&
+        url.pathname === "/teeTime/booking" &&
+        url.searchParams.get("methodName") === "resourcesForClub"
+      ) {
+        return jsonResponse([
+          {
+            Guid: "resource-mobile",
+            Name: "Grini Golfbane"
+          }
+        ]);
+      }
+
+      if (
+        url.hostname === "example.test" &&
+        url.pathname === "/teeTime/booking" &&
+        url.searchParams.get("methodName") === "teeTimesForDay"
+      ) {
+        return xmlResponse(`
+          <root>
+            <Setup MaxNumberOfPlayers="4" Ressource_GUID="resource-mobile" Ressource_Name="Grini Golfbane" />
+            <slot time="16:40">
+              <slotnode BookingGuid="booking-2" Description="Private booking" />
+            </slot>
+          </root>
+        `);
+      }
+
+      if (url.hostname === "web.example.test" && url.pathname === "/site/system/redirect.asp") {
+        return textResponse("<html>Login</html>");
+      }
+
+      if (url.hostname === "web.example.test" && url.pathname === "/login.asp") {
+        return new Response("", {
+          status: 302,
+          headers: {
+            Location: "/site/ressources/booking/grid.asp",
+            "Set-Cookie": "ASPUniqueID=session-1; path=/"
+          }
+        });
+      }
+
+      if (url.hostname === "web.example.test" && url.pathname === "/site/ressources/booking/grid.asp") {
+        return textResponse("<html>Logged in</html>");
+      }
+
+      if (
+        url.hostname === "web.example.test" &&
+        url.pathname === "/site/my_golfbox/ressources/booking/grid.asp" &&
+        _init.method !== "POST"
+      ) {
+        return textResponse(`
+          <input type="hidden" name="command" value="" />
+          <input type="hidden" name="commandValue" value="" />
+          <select name="ddlClub">
+            <option value="">Velg klubb</option>
+            <option value="club-guid">Grini Golfklubb</option>
+          </select>
+          <input name="BookingDate" value="08.06.2026" />
+        `);
+      }
+
+      if (url.hostname === "web.example.test" && url.pathname === "/site/my_golfbox/ressources/booking/grid.asp") {
+        const params = new URLSearchParams(body ?? "");
+        if (params.get("command") === "getClub") {
+          assert.equal(params.get("ddlClub"), "club-guid");
+          return textResponse(`
+            <input type="hidden" name="command" value="" />
+            <input type="hidden" name="commandValue" value="" />
+            <select name="ddlClub"><option value="club-guid" selected>Grini Golfklubb</option></select>
+            <select name="ddlRessource_GUID">
+              <option value="{resource-web}" selected>Grini Golfklubb - Grini Golfbane</option>
+            </select>
+            <input name="BookingDate" value="08.06.2026" />
+          `);
+        }
+
+        if (params.get("command") === "changeRessource") {
+          return textResponse(`
+            <input type="hidden" name="command" value="" />
+            <input type="hidden" name="commandValue" value="" />
+            <select name="ddlClub"><option value="club-guid" selected>Grini Golfklubb</option></select>
+            <select name="ddlRessource_GUID">
+              <option value="{resource-web}" selected>Grini Golfklubb - Grini Golfbane</option>
+            </select>
+            <input name="BookingDate" value="08.06.2026" />
+          `);
+        }
+
+        if (params.get("command") === "calendar1_select") {
+          assert.equal(params.get("commandValue"), "20260609T000000");
+          assert.equal(params.get("BookingDate"), "09.06.2026");
+          assert.equal(params.get("chkShow_Names"), "1");
+          return textResponse(`
+            <div class="d-flex list-row hour full">
+              <div class="timecell">16:40</div>
+              <div onclick="showWindow('20260609T164000', '0','0')" class="time-players flex-grow-1 pointer">
+                <div class="fw-bold">Jonas Fagermo</div>
+              </div>
+            </div>
+          `);
+        }
+      }
+
+      return new Response("", { status: 404 });
+    },
+    async () => {
+      const client = new OfficialGolfBoxClient({
+        apiBaseUrl: "https://example.test/",
+        webBaseUrl: "https://web.example.test/",
+        allowUntrustedGolfBoxUrls: true,
+        username: "member@example.com",
+        password: "secret",
+        country: "NO"
+      });
+
+      const matches = await client.searchTeeTimePlayers({
+        clubId: "club-guid",
+        date: "2026-06-09",
+        query: "Fagermo"
+      });
+
+      assert.deepEqual(matches, [
+        {
+          slotId: "resource-web|20260609T164000|member-club-guid",
+          clubId: "club-guid",
+          courseName: "Grini Golfklubb - Grini Golfbane",
+          startsAt: "2026-06-09T16:40:00+02:00",
+          playerName: "Jonas Fagermo",
+          matchedText: "Jonas Fagermo",
+          source: "webPortal"
+        }
+      ]);
+    }
+  );
+});
+
 test("official client falls back to web resource selection and keeps mobile-open slots", async () => {
   await withMockFetch(
     (url, _init, headers, body) => {

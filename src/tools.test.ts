@@ -23,6 +23,7 @@ test("registerGolfBoxTools exposes upcoming tee-time input schema", () => {
     }),
     listClubs: async () => [],
     searchTeeTimes: async () => [],
+    searchTeeTimePlayers: async () => [],
     listBookings: async () => [],
     listUpcomingTeeTimes: async () => [],
     listTournaments: async () => [],
@@ -49,6 +50,18 @@ test("registerGolfBoxTools exposes upcoming tee-time input schema", () => {
 
   const upcomingTool = tools.get("golfbox_list_upcoming_tee_times");
   assert.ok(upcomingTool);
+  const playerSearchTool = tools.get("golfbox_search_tee_time_players");
+  assert.ok(playerSearchTool);
+  assert.deepEqual(Object.keys(playerSearchTool.inputSchema).sort(), [
+    "clubId",
+    "date",
+    "earliestTime",
+    "latestTime",
+    "query"
+  ]);
+  assert.equal(playerSearchTool.inputSchema.query.parse("Fagermo"), "Fagermo");
+  assert.throws(() => playerSearchTool.inputSchema.query.parse(""));
+
   assert.deepEqual(Object.keys(upcomingTool.inputSchema).sort(), ["clubId", "clubIds", "daysAhead", "fromDate"]);
   assert.equal(upcomingTool.inputSchema.fromDate.parse("2026-06-07"), "2026-06-07");
   assert.equal(upcomingTool.inputSchema.daysAhead.parse(90), 90);

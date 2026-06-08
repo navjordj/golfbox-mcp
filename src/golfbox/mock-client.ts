@@ -8,6 +8,8 @@ import type {
   CreateBookingRequest,
   GolfBoxClient,
   TeeTimeSearch,
+  TeeTimePlayerMatch,
+  TeeTimePlayerSearch,
   TeeTimeSlot,
   Tournament,
   UpcomingTeeTime,
@@ -103,6 +105,32 @@ export class MockGolfBoxClient implements GolfBoxClient {
         availableSpots: Math.max(search.players, 4 - (index % 3)),
         priceNok: holes === 18 ? 850 : 500,
         notes: index === 1 ? ["Mock-data: bekreft ekte tilgjengelighet i offisiell adapter."] : []
+      }));
+  }
+
+  async searchTeeTimePlayers(search: TeeTimePlayerSearch): Promise<TeeTimePlayerMatch[]> {
+    const club = clubs.find((candidate) => candidate.id === search.clubId);
+    if (!club) {
+      return [];
+    }
+
+    const players = [
+      { time: "08:10", name: "Booked Player" },
+      { time: "16:40", name: "Jonas Fagermo" }
+    ];
+    const normalizedQuery = search.query.trim().toLowerCase();
+
+    return players
+      .filter((player) => withinTimeWindow(player.time, search.earliestTime, search.latestTime))
+      .filter((player) => player.name.toLowerCase().includes(normalizedQuery))
+      .map((player) => ({
+        slotId: `${club.id}-${search.date}-${player.time.replace(":", "")}`,
+        clubId: club.id,
+        courseName: `${club.name} hovedbane`,
+        startsAt: toDateTime(search.date, player.time),
+        playerName: player.name,
+        matchedText: player.name,
+        source: "teeTimesForDay"
       }));
   }
 
