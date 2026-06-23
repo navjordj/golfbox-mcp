@@ -836,10 +836,16 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
       );
     }
 
-    if (request.players.length > 1) {
-      throw new Error(
-        "This tee time is only open in the GolfBox web portal. Web portal booking is currently mapped only for the authenticated player."
-      );
+    if (request.players.length > 4) {
+      throw new Error("GolfBox supports at most 4 players per tee-time booking.");
+    }
+    const additionalPlayers = request.players.slice(1);
+    for (const player of additionalPlayers) {
+      if (!player.golfId?.trim()) {
+        throw new Error(
+          `Cannot add ${player.name} to the booking without a GolfBox member number (golfId).`
+        );
+      }
     }
 
     const session = await this.getWebSession();
@@ -865,7 +871,62 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
       throw new Error("GolfBox web portal did not open a booking window for this tee time.");
     }
 
-    const form = parseWebFormFields(page.text);
+    // Phase 1: resolve each additional player by member number using a "search only"
+    // postback. This mirrors the per-row search button in the GolfBox UI
+    // (cmdSubmit_Click(true, rowIndex) -> activates txtSearchAble_N, sets chkSearchOnly,
+    // posts command=next). The server re-renders the form with guid_N / txt_Name_N
+    // populated when it finds the member, or leaves guid_N empty when the number is unknown.
+    let currentPage = page;
+    for (let i = 0; i < additionalPlayers.length; i++) {
+      const rowIndex = i + 1;
+      const player = additionalPlayers[i];
+      const memberNumber = player.golfId!.trim();
+
+      const searchForm = parseWebFormFields(currentPage.text);
+      searchForm.set(`txt_MemberClubID_${rowIndex}`, memberNumber);
+      searchForm.set(`GBDropDown_SelectedOption_ddlUnion_${rowIndex}`, "NO");
+      searchForm.delete("txtSearchAble");
+      searchForm.append("txtSearchAble", String(rowIndex));
+      searchForm.set("chkSearchOnly", "on");
+      searchForm.set("command", "next");
+      searchForm.set("commandValue", "");
+
+      try {
+        currentPage = await this.webTextRequest(session, page.url, {
+          method: "POST",
+          headers: {
+            Accept: "text/html",
+            "Content-Type": "application/x-www-form-urlencoded",
+            Referer: page.url
+          },
+          body: searchForm.toString()
+        });
+      } catch (error) {
+        await this.cancelWebBookingWindow(session, page.url, currentPage.text);
+        throw error;
+      }
+
+      const resolved = parseWebFormFields(currentPage.text);
+      const resolvedGuid = resolved.get(`guid_${rowIndex}`)?.trim();
+      if (!resolvedGuid) {
+        const lookupError = readWebPortalError(currentPage.text);
+        await this.cancelWebBookingWindow(session, page.url, currentPage.text);
+        throw new Error(
+          `GolfBox could not find member "${memberNumber}" (${player.name}) to add to this booking.` +
+            (lookupError ? ` ${lookupError}` : "")
+        );
+      }
+    }
+
+    // Phase 2: confirm the booking for the booker + all resolved players. Mirrors the
+    // approve button (cmdSubmit_Click(false, 99) -> activate all player rows, no
+    // chkSearchOnly, post command=next).
+    const form = parseWebFormFields(currentPage.text);
+    form.delete("txtSearchAble");
+    for (let i = 0; i < additionalPlayers.length; i++) {
+      form.append("txtSearchAble", String(i + 1));
+    }
+    form.delete("chkSearchOnly");
     form.set("command", "next");
     form.set("commandValue", "");
 
@@ -881,7 +942,7 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
         body: form.toString()
       });
     } catch (error) {
-      await this.cancelWebBookingWindow(session, page.url, page.text);
+      await this.cancelWebBookingWindow(session, page.url, currentPage.text);
       throw error;
     }
 
