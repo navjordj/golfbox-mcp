@@ -690,6 +690,14 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
       );
     }
 
+    // NGF / useNewApp accounts expose no MobileHub day grid, so loadSlotFromDayGrid returns
+    // nothing and the MobileHub booking session below can never be opened. For these accounts
+    // the authenticated web booking grid is the only way to reserve a tee time.
+    if (!slotDetail && this.hasCredentials()) {
+      const webDetail: SlotDayGridDetail = { slot, attrs: {}, clubGuid: slot.memberClubGuid };
+      return this.createBookingViaWebPortal(slot, effectiveRequest, webDetail);
+    }
+
     if (slotDetail && shouldUseWebPortalBooking(slotDetail.attrs)) {
       return this.createBookingViaWebPortal(slot, effectiveRequest, slotDetail);
     }
