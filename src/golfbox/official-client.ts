@@ -292,6 +292,9 @@ interface WebTextResponse {
   text: string;
 }
 
+const WEB_BOOKING_GRID_PATH = "/site/my_golfbox/ressources/booking/grid.asp";
+const WEB_SESSION_TTL_MS = 8 * 60 * 1000;
+
 export class OfficialGolfBoxClient implements GolfBoxClient {
   private static readonly gimmieGraphqlUrl = "https://be.glfr.com/graphql";
   private readonly baseUrl: string;
@@ -308,6 +311,8 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
   private readonly includeErrorBodySnippets: boolean;
   private cachedToken?: AuthToken;
   private cachedUser?: AuthenticatedGolfBoxUser;
+  private cachedWebSession?: WebCookieJar;
+  private cachedWebSessionAt?: number;
   private readonly bookingsByIdempotencyKey = new Map<string, Promise<Booking>>();
   private readonly responseContexts = new WeakMap<Response, { method: string; path: string }>();
 
@@ -404,13 +409,11 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
       throw new Error("Authenticated GolfBox user does not have booking access.");
     }
 
-    const mobileHubResources = await this.listResourcesForClub(search.clubId);
-    const resources =
-      mobileHubResources.length > 0 ? mobileHubResources : await this.listWebResourcesForClub(search.clubId);
     const memberClubGuid = user.clubGuid ?? search.clubId;
+    const mobileHubResources = await this.listResourcesForClub(search.clubId);
     const slots: TeeTimeSlot[] = [];
 
-    for (const resource of resources) {
+    for (const resource of mobileHubResources) {
       const xml = await this.authorizedTextRequest(
         `/teeTime/booking?methodName=teeTimesForDay&resourceGuid=${encodeURIComponent(resource.guid)}` +
           `&teeTime=${encodeURIComponent(toGolfBoxDate(search.date))}` +
@@ -424,6 +427,14 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
       );
 
       slots.push(...parseTeeTimeXml(xml, search, resource, memberClubGuid));
+    }
+
+    // useNewApp / NGF accounts expose no MobileHub resources or day grid, so the
+    // MobileHub query above yields nothing. The authenticated web booking grid is the
+    // only availability source for these accounts, so surface its errors rather than
+    // masking a transient login throttle as an empty (misleading) result.
+    if (slots.length === 0 && this.hasCredentials()) {
+      slots.push(...(await this.searchWebTeeTimes(search, memberClubGuid)));
     }
 
     return slots.sort((left, right) => left.startsAt.localeCompare(right.startsAt));
@@ -823,7 +834,7 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
       );
     }
 
-    const session = await this.createWebSession();
+    const session = await this.getWebSession();
     const clubGuid = detail.clubGuid ?? slot.memberClubGuid;
     const windowPath =
       `/site/my_golfbox/ressources/booking/window.asp?Ressource_GUID=${encodeURIComponent(toWebGuid(slot.resourceGuid))}` +
@@ -1313,13 +1324,7 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
       throw new Error("GolfBox username/password is required for web portal Mine tider lookup.");
     }
 
-    const session = await this.createWebSession();
-    const gridPage = await this.webTextRequest(session, "/site/my_golfbox/ressources/booking/grid.asp", {
-      method: "GET",
-      headers: {
-        Accept: "text/html"
-      }
-    });
+    const { session, gridPage } = await this.openWebBookingGrid();
     const myTimesPath = findWebMyTimesPath(gridPage.text);
     if (!myTimesPath) {
       throw new Error("GolfBox web portal did not expose a Mine tider link.");
@@ -1541,7 +1546,7 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
     }
 
     try {
-      const session = await this.createWebSession();
+      const session = await this.getWebSession();
       const clubGuidForWeb = toWebGuid(clubGuid);
       const page = await this.webTextRequest(
         session,
@@ -1553,6 +1558,11 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
           }
         }
       );
+      if (isWebGridBounce(page.text)) {
+        this.cachedWebSession = undefined;
+        this.cachedWebSessionAt = undefined;
+        return [];
+      }
 
       const resources = parseWebBookingResources(page.text, page.url);
       return resources.map((resource) => ({
@@ -1568,13 +1578,7 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
     search: TeeTimePlayerSearch,
     memberClubGuid: string
   ): Promise<TeeTimePlayerMatch[]> {
-    const session = await this.createWebSession();
-    const gridPage = await this.webTextRequest(session, "/site/my_golfbox/ressources/booking/grid.asp", {
-      method: "GET",
-      headers: {
-        Accept: "text/html"
-      }
-    });
+    const { session, gridPage } = await this.openWebBookingGrid();
     const clubPage = await this.postWebGridForm(session, gridPage, {
       command: "getClub",
       commandValue: "",
@@ -1612,6 +1616,47 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
     }
 
     return matches;
+  }
+
+  private async searchWebTeeTimes(search: TeeTimeSearch, memberClubGuid: string): Promise<TeeTimeSlot[]> {
+    const { session, gridPage } = await this.openWebBookingGrid();
+    const clubPage = await this.postWebGridForm(session, gridPage, {
+      command: "getClub",
+      commandValue: "",
+      fields: {
+        ddlClub: stripGuidBraces(search.clubId)
+      }
+    });
+    const resources = parseWebBookingResources(clubPage.text, clubPage.url);
+    const selectedResources =
+      resources.length > 0 ? resources : [{ guid: search.clubId, name: "GolfBox web grid" } satisfies TeeResource];
+    const slots: TeeTimeSlot[] = [];
+
+    for (const resource of selectedResources) {
+      const resourcePage = await this.postWebGridForm(session, clubPage, {
+        command: "changeRessource",
+        commandValue: "",
+        fields: {
+          ddlClub: stripGuidBraces(search.clubId),
+          ddlRessource_GUID: toWebGuid(resource.guid)
+        }
+      });
+      const datePage = await this.postWebGridForm(session, resourcePage, {
+        command: "calendar1_select",
+        commandValue: `${toGolfBoxDate(search.date)}T000000`,
+        fields: {
+          ddlClub: stripGuidBraces(search.clubId),
+          ddlRessource_GUID: toWebGuid(resource.guid),
+          BookingDate: toWebBookingDate(search.date),
+          chkShow_Names: "1",
+          chkShowPlayerDetails: "on"
+        }
+      });
+
+      slots.push(...parseWebGridAvailability(datePage.text, search, resource, memberClubGuid));
+    }
+
+    return slots;
   }
 
   private async postWebGridForm(
@@ -1694,7 +1739,74 @@ export class OfficialGolfBoxClient implements GolfBoxClient {
       throw new Error("GolfBox web login did not create an authenticated session.");
     }
 
+    // Verify the actual booking-grid surface is reachable. A throttled/expired login still
+    // returns a redirect-only session that bounces the grid to the public site.
+    const gridPage = await this.webTextRequest(session, WEB_BOOKING_GRID_PATH, {
+      method: "GET",
+      headers: {
+        Accept: "text/html"
+      }
+    });
+    if (isWebGridBounce(gridPage.text)) {
+      throw new Error("GolfBox web session was not authenticated (booking grid bounced to public site).");
+    }
+
     return session;
+  }
+
+  private async getWebSession(forceNew = false): Promise<WebCookieJar> {
+    const now = Date.now();
+    if (
+      !forceNew &&
+      this.cachedWebSession &&
+      this.cachedWebSessionAt !== undefined &&
+      now - this.cachedWebSessionAt < WEB_SESSION_TTL_MS
+    ) {
+      return this.cachedWebSession;
+    }
+
+    this.cachedWebSession = undefined;
+    this.cachedWebSessionAt = undefined;
+
+    // Deliberately attempt the login only once. A bounced grid means GolfBox is
+    // rate-limiting logins, and retrying immediately only deepens the throttle.
+    const session = await this.createWebSession();
+    this.cachedWebSession = session;
+    this.cachedWebSessionAt = Date.now();
+    return session;
+  }
+
+  private async openWebBookingGrid(): Promise<{ session: WebCookieJar; gridPage: WebTextResponse }> {
+    // A freshly created session is grid-validated inside createWebSession, so a bounce
+    // here can only come from a stale *cached* session. Re-login at most once.
+    let session = await this.getWebSession();
+    let gridPage = await this.webTextRequest(session, WEB_BOOKING_GRID_PATH, {
+      method: "GET",
+      headers: {
+        Accept: "text/html"
+      }
+    });
+    if (!isWebGridBounce(gridPage.text)) {
+      return { session, gridPage };
+    }
+
+    this.cachedWebSession = undefined;
+    this.cachedWebSessionAt = undefined;
+    session = await this.getWebSession(true);
+    gridPage = await this.webTextRequest(session, WEB_BOOKING_GRID_PATH, {
+      method: "GET",
+      headers: {
+        Accept: "text/html"
+      }
+    });
+    if (!isWebGridBounce(gridPage.text)) {
+      return { session, gridPage };
+    }
+
+    throw new Error(
+      "GolfBox web booking grid is currently unavailable (the session was bounced to the public site). " +
+        "This usually means the GolfBox login is being temporarily rate-limited; wait a minute and try again."
+    );
   }
 
   private async webTextRequest(
@@ -2954,6 +3066,18 @@ function isWebLoginFailurePage(html: string): boolean {
   return /<form\b[^>]*(?:id|name)=["'](?:loginform|frmLogin)["']/i.test(html) || /loginform\.submitted/i.test(html);
 }
 
+function isWebGridBounce(html: string): boolean {
+  // An unauthenticated/expired web session is bounced to the public norskgolf.no site,
+  // returning a tiny redirect page instead of the booking grid (which always has the club selector).
+  if (html.length < 2_000) {
+    return true;
+  }
+  if (/norskgolf\.no/i.test(html)) {
+    return true;
+  }
+  return !/ddlClub/i.test(html);
+}
+
 function readWebPortalError(html: string): string | undefined {
   const errorContainer =
     html.match(/<div\b[^>]*id=["']clientErrorContainer["'][^>]*>([\s\S]*?)<\/div>/i)?.[1] ??
@@ -3152,6 +3276,79 @@ function parseWebTeeTimePlayerMatches(
   }
 
   return matches;
+}
+
+function countWebGridPlayers(rowBody: string): number {
+  return (rowBody.match(/class="fw-bold col-auto[^"]*text-truncate/gi) ?? []).length;
+}
+
+function parseWebGridAvailability(
+  html: string,
+  search: TeeTimeSearch,
+  resource: TeeResource,
+  memberClubGuid: string
+): TeeTimeSlot[] {
+  const maxPlayers = 4;
+  const slots: TeeTimeSlot[] = [];
+  const seen = new Set<string>();
+
+  // The web booking grid renders one list row per tee time:
+  //   <div class="d-flex list-row hour c_partfree">
+  //     <div class="timecell">11:00</div>
+  //     <div onclick="showWindow('20260623T110000','0','0')" class="time-players ... pointer"> ...players... </div>
+  //   </div>
+  // State classes: `full` (no open seats), `c_partfree`/`c_free` (open seats), `expired` (past / not bookable).
+  // Only rows whose player cell is clickable carry a showWindow(...) booking token.
+  const rowPattern =
+    /<div class="d-flex list-row hour([^"]*)">\s*<div class="timecell">\s*([0-9]{1,2}:[0-9]{2})\s*<\/div>([\s\S]*?)(?=<div class="d-flex list-row hour|$)/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = rowPattern.exec(html)) !== null) {
+    const stateClasses = (match[1] ?? "").trim().toLowerCase();
+    const timeOfDay = match[2] ?? "";
+    const rowBody = match[3] ?? "";
+
+    if (/\bexpired\b/.test(stateClasses)) {
+      continue;
+    }
+    if (!isWithinSearchWindow(timeOfDay, search)) {
+      continue;
+    }
+
+    const tokenMatch = rowBody.match(/showWindow\(\s*['"](\d{8}T\d{6})['"]/i);
+    if (!tokenMatch) {
+      // No booking token => slot is not bookable (e.g. portal window not yet open).
+      continue;
+    }
+    const bookingStart = normalizeGolfBoxDateTime(tokenMatch[1]);
+    if (!bookingStart || golfBoxDateTimeToIsoDate(bookingStart) !== search.date) {
+      continue;
+    }
+
+    const isFull = /\bfull\b/.test(stateClasses);
+    const occupied = countWebGridPlayers(rowBody);
+    const availableSpots = isFull ? 0 : Math.max(maxPlayers - occupied, 0);
+    if (availableSpots < search.players) {
+      continue;
+    }
+
+    const slotId = `${stripGuidBraces(resource.guid)}|${bookingStart}|${stripGuidBraces(memberClubGuid)}`;
+    if (seen.has(slotId)) {
+      continue;
+    }
+    seen.add(slotId);
+
+    slots.push({
+      slotId,
+      clubId: search.clubId,
+      courseName: resource.name,
+      startsAt: toNorwayLocalIso(search.date, timeOfDay),
+      holes: search.holes ?? 18,
+      availableSpots
+    });
+  }
+
+  return slots;
 }
 
 function readWebBookingStartLinks(html: string): { index: number; resourceGuid?: string; bookingStart: string }[] {
